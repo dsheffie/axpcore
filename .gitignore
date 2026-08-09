@@ -1,4 +1,14 @@
-*.d
+obj_dir/
+tb_obj/
+csmith_alpha/
 *.o
-obj_dir
-ooo_core
+*.text
+alpha_iss
+alpha_test
+alpha_test_bwx
+alpha_test_nobwx
+alpha_cosim_test
+rv64_core
+*-log.txt
+*-tip.txt
+*-branch_info.txt

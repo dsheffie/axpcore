@@ -46,6 +46,7 @@ static bool load_alpha_elf(const char *fn, alpha_state_t *s) {
     return false;
   }
   const Elf64_Phdr *ph = reinterpret_cast<const Elf64_Phdr*>(buf + eh->e_phoff);
+  uint64_t max_end = 0;
   for(int i = 0; i < eh->e_phnum; i++) {
     if(ph[i].p_type != PT_LOAD) {
       continue;
@@ -57,8 +58,12 @@ static bool load_alpha_elf(const char *fn, alpha_state_t *s) {
     }
     memcpy(s->mem + ph[i].p_vaddr, buf + ph[i].p_offset, ph[i].p_filesz);
     /* memsz > filesz tail is bss - mem starts zeroed */
+    if(ph[i].p_vaddr + ph[i].p_memsz > max_end) {
+      max_end = ph[i].p_vaddr + ph[i].p_memsz;
+    }
   }
   s->pc = eh->e_entry;
+  s->brk_addr = (max_end + 8191UL) & ~8191UL;
   munmap(buf, st.st_size);
   return true;
 }
@@ -100,7 +105,30 @@ int main(int argc, char *argv[]) {
     return -1;
   }
   s->maxicnt = maxicnt;
-  s->gpr[30] = STACK_TOP;
+  s->mmap_addr = 0x200000000UL;
+
+  /* linux process ABI : sp points at argc / argv / envp / auxv.
+   * static glibc _start consumes this. */
+  uint64_t sp = STACK_TOP - 4096;
+  uint64_t prog_str = sp + 512;
+  uint64_t rand_bytes = sp + 544;
+  strcpy(reinterpret_cast<char*>(s->mem + prog_str), "alpha_bin");
+  for(int i = 0; i < 16; i++) {
+    s->mem[rand_bytes + i] = 0x5a ^ i;
+  }
+  uint64_t v[] = {
+    1, prog_str, 0, /* argc, argv[0], null */
+    0, /* empty envp */
+    6, 8192, /* AT_PAGESZ */
+    17, 100, /* AT_CLKTCK */
+    11, 1000, 12, 1000, 13, 1000, 14, 1000, /* uid/euid/gid/egid */
+    23, 0, /* AT_SECURE */
+    16, 0, /* AT_HWCAP */
+    25, rand_bytes, /* AT_RANDOM */
+    0, 0 /* AT_NULL */
+  };
+  memcpy(s->mem + sp, v, sizeof(v));
+  s->gpr[30] = sp;
 
   runAlpha(s);
 

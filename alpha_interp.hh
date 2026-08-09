@@ -19,6 +19,15 @@ struct alpha_state_t {
   int exit_code;
   bool lock_valid; /* ldx_l / stx_c lock flag */
   uint64_t lock_addr;
+  uint64_t brk_addr; /* program break for the brk syscall */
+  uint64_t mmap_addr; /* bump allocator for anonymous mmap */
+
+  /* minimal fp state : alpha has no integer divide - libgcc's __divqu
+   * and friends do int division THROUGH the fpu, so running any
+   * compiled code with division needs this subset even on a "no fp"
+   * machine.  f31 reads zero. */
+  uint64_t fpr[32];
+  uint64_t fpcr;
 
   uint64_t load64(uint64_t pa) const {
     return *reinterpret_cast<uint64_t*>(mem + pa);
@@ -76,6 +85,13 @@ union alpha_t {
     uint32_t ra : 5;
     uint32_t opcode : 6;
   } ol;
+  struct fp_t { /* fp operate format : 11-bit function */
+    uint32_t rc : 5;
+    uint32_t func : 11;
+    uint32_t rb : 5;
+    uint32_t ra : 5;
+    uint32_t opcode : 6;
+  } f;
   struct pal_t {
     uint32_t func : 26;
     uint32_t opcode : 6;

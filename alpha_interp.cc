@@ -5,32 +5,171 @@
 #include "alpha_interp.hh"
 #include <cstdio>
 #include <cstdlib>
+#include <cfenv>
+#include <cmath>
 #include <unistd.h>
 
 static const bool g_trace = getenv("AXP_TRACE") != nullptr;
 
-/* linux/alpha inherits OSF/1 syscall numbering */
+/* linux/alpha inherits OSF/1 syscall numbering.  return convention :
+ * v0 = result (or positive errno), a3 = error flag.  enough of the set
+ * to run static glibc binaries - the list came from
+ * `qemu-alpha -strace` on a static hello world. */
 static void handle_callsys(alpha_state_t *s) {
   int64_t num = s->gpr[0];
-  int64_t a0 = s->gpr[16], a1 = s->gpr[17], a2 = s->gpr[18];
+  int64_t a0 = s->gpr[16], a1 = s->gpr[17], a2 = s->gpr[18], a3 = s->gpr[19];
+  s->gpr[19] = 0;
   switch(num)
     {
     case 1: /* exit */
+    case 405: /* exit_group */
       s->brk = 1;
       s->exit_code = static_cast<int>(a0);
       break;
     case 3: /* read */
       s->gpr[0] = read(a0, s->mem + a1, a2);
-      s->gpr[19] = 0;
       break;
     case 4: /* write */
       s->gpr[0] = write(a0, s->mem + a1, a2);
-      s->gpr[19] = 0;
+      break;
+    case 17: /* brk : linux returns the new break */
+      if(a0 != 0) {
+	s->brk_addr = a0;
+      }
+      s->gpr[0] = s->brk_addr;
+      break;
+    case 54: /* ioctl : nothing is a tty */
+      s->gpr[0] = 25; /* ENOTTY */
+      s->gpr[19] = 1;
+      break;
+    case 71: /* mmap : anonymous only, bump allocator */
+      if((a0 == 0) && ((s->gpr[20] & 0x10 /* MAP_ANONYMOUS on alpha */) != 0)) {
+	uint64_t len = (a1 + 8191UL) & ~8191UL;
+	s->gpr[0] = s->mmap_addr;
+	s->mmap_addr += len;
+      }
+      else {
+	fprintf(stderr, "alpha_interp: unhandled mmap(%lx, %lx, flags %lx) at pc %lx\n",
+		a0, a1, s->gpr[20], s->pc);
+	exit(-1);
+      }
+      break;
+    case 73: /* munmap */
+    case 74: /* mprotect */
+    case 352: /* rt_sigaction */
+    case 353: /* rt_sigprocmask */
+      s->gpr[0] = 0;
+      break;
+    case 121: { /* writev : glibc stdio flush path */
+      int64_t r = 0;
+      for(int64_t i = 0; i < a2; i++) {
+	uint64_t base = s->load64(a1 + 16*i);
+	uint64_t len = s->load64(a1 + 16*i + 8);
+	r += write(a0, s->mem + base, len);
+      }
+      s->gpr[0] = r;
+      break;
+    }
+    case 256: /* osf_getsysinfo : fp control, none here */
+      s->gpr[0] = 22; /* EINVAL */
+      s->gpr[19] = 1;
+      break;
+    case 339: { /* uname : 6 fields x 65 bytes */
+      static const char *f[6] = {"Linux", "axpcore", "5.4.0", "#1", "alpha", ""};
+      for(int i = 0; i < 6; i++) {
+	uint64_t p = a0 + 65*i;
+	size_t n = strlen(f[i]);
+	memcpy(s->mem + p, f[i], n + 1);
+      }
+      s->gpr[0] = 0;
+      break;
+    }
+    case 378: /* gettid */
+    case 411: /* set_tid_address */
+      s->gpr[0] = 42;
+      break;
+    case 427: /* fstat64 : deterministic character device for stdio */
+      memset(s->mem + a1, 0, 136);
+      s->store32(a1 + 40, 0020000 | 0620); /* st_mode */
+      s->store32(a1 + 52, 8192); /* st_blksize */
+      s->gpr[0] = 0;
+      break;
+    case 460: { /* readlinkat : only /proc/self/exe shows up */
+      static const char path[] = "/alpha_bin";
+      size_t n = sizeof(path) - 1;
+      memcpy(s->mem + a2, path, n);
+      s->gpr[0] = n;
+      break;
+    }
+    case 466: /* set_robust_list : qemu returns ENOSYS too */
+      s->gpr[0] = 78; /* ENOSYS */
+      s->gpr[19] = 1;
+      break;
+    case 496: /* prlimit64(0, resource, NULL, old) */
+      if(a3 != 0) {
+	s->store64(a3, 8UL << 20); /* rlim_cur : 8MB stack */
+	s->store64(a3 + 8, ~0UL);
+      }
+      s->gpr[0] = 0;
+      break;
+    case 511: /* getrandom : deterministic - only feeds the stack canary */
+      for(int64_t i = 0; i < a1; i++) {
+	s->store8(a0 + i, 0xa5 ^ i);
+      }
+      s->gpr[0] = a1;
       break;
     default:
       fprintf(stderr, "alpha_interp: unimplemented callsys %ld at pc %lx\n",
 	      num, s->pc);
       exit(-1);
+    }
+}
+
+static inline double as_double(uint64_t x) {
+  double d;
+  memcpy(&d, &x, 8);
+  return d;
+}
+
+static inline uint64_t as_u64(double d) {
+  uint64_t x;
+  memcpy(&x, &d, 8);
+  return x;
+}
+
+/* S-format memory single -> register T-format (the MAP_S widening) */
+static inline uint64_t map_s(uint32_t x) {
+  uint64_t sign = (x >> 31) & 1;
+  uint64_t exp = (x >> 23) & 0xff;
+  uint64_t frac = x & 0x7fffff;
+  uint64_t e11;
+  if(exp == 0xff) {
+    e11 = 0x7ff;
+  }
+  else if(exp == 0) {
+    e11 = 0;
+  }
+  else {
+    e11 = exp + (1023 - 127);
+  }
+  return (sign << 63) | (e11 << 52) | (frac << 29);
+}
+
+/* alpha fp rounding qualifier (func bits 7:6) -> host rounding mode */
+static inline int alpha_rnd(uint32_t rnd, uint64_t fpcr) {
+  switch(rnd)
+    {
+    case 0: return FE_TOWARDZERO; /* /c chopped */
+    case 1: return FE_DOWNWARD; /* /m minus */
+    case 2: return FE_TONEAREST; /* normal */
+    default: /* /d dynamic : FPCR<59:58> */
+      switch((fpcr >> 58) & 3)
+	{
+	case 0: return FE_TOWARDZERO;
+	case 1: return FE_DOWNWARD;
+	case 2: return FE_TONEAREST;
+	default: return FE_UPWARD;
+	}
     }
 }
 
@@ -95,6 +234,24 @@ void execAlpha(alpha_state_t *s) {
       break;
     case 0x0f: /* stq_u */
       s->store64((s->gpr[m.m.rb] + sext16(m.m.disp)) & ~7UL, s->gpr[m.m.ra]);
+      break;
+
+    case 0x22: /* lds : S memory format widens to register T format */
+      s->fpr[m.m.ra] = map_s(s->load32(s->gpr[m.m.rb] + sext16(m.m.disp)));
+      s->fpr[31] = 0;
+      break;
+    case 0x23: /* ldt */
+      s->fpr[m.m.ra] = s->load64(s->gpr[m.m.rb] + sext16(m.m.disp));
+      s->fpr[31] = 0;
+      break;
+    case 0x26: { /* sts */
+      uint64_t v = s->fpr[m.m.ra];
+      s->store32(s->gpr[m.m.rb] + sext16(m.m.disp),
+		 ((v >> 63) << 31) | ((v >> 29) & 0x7fffffffUL));
+      break;
+    }
+    case 0x27: /* stt */
+      s->store64(s->gpr[m.m.rb] + sext16(m.m.disp), s->fpr[m.m.ra]);
       break;
 
     case 0x10: { /* INTA */
@@ -364,6 +521,140 @@ void execAlpha(alpha_state_t *s) {
       break;
     }
 
+    case 0x16: { /* FLTI : ieee arithmetic.  trap qualifiers (func<10:8>)
+		  * are ignored, rounding qualifier honored via fenv */
+      double fa = as_double(s->fpr[m.f.ra]);
+      double fb = as_double(s->fpr[m.f.rb]);
+      int64_t vb = static_cast<int64_t>(s->fpr[m.f.rb]);
+      uint32_t fn = m.f.func & 0x3f;
+      uint64_t rc = 0;
+      fesetround(alpha_rnd((m.f.func >> 6) & 3, s->fpcr));
+      switch(fn)
+	{
+	case 0x00: /* adds */
+	  rc = as_u64(static_cast<double>(static_cast<float>(fa) + static_cast<float>(fb)));
+	  break;
+	case 0x01: /* subs */
+	  rc = as_u64(static_cast<double>(static_cast<float>(fa) - static_cast<float>(fb)));
+	  break;
+	case 0x02: /* muls */
+	  rc = as_u64(static_cast<double>(static_cast<float>(fa) * static_cast<float>(fb)));
+	  break;
+	case 0x03: /* divs */
+	  rc = as_u64(static_cast<double>(static_cast<float>(fa) / static_cast<float>(fb)));
+	  break;
+	case 0x20: /* addt */
+	  rc = as_u64(fa + fb);
+	  break;
+	case 0x21: /* subt */
+	  rc = as_u64(fa - fb);
+	  break;
+	case 0x22: /* mult */
+	  rc = as_u64(fa * fb);
+	  break;
+	case 0x23: /* divt */
+	  rc = as_u64(fa / fb);
+	  break;
+	case 0x24: /* cmptun */
+	  rc = (std::isnan(fa) || std::isnan(fb)) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x25: /* cmpteq */
+	  rc = (fa == fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x26: /* cmptlt */
+	  rc = (fa < fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x27: /* cmptle */
+	  rc = (fa <= fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x2c: /* cvtts */
+	  rc = as_u64(static_cast<double>(static_cast<float>(fb)));
+	  break;
+	case 0x2f: /* cvttq : rounding per qualifier (llrint follows fenv) */
+	  rc = static_cast<uint64_t>(llrint(fb));
+	  break;
+	case 0x3c: /* cvtqs */
+	  rc = as_u64(static_cast<double>(static_cast<float>(vb)));
+	  break;
+	case 0x3e: /* cvtqt */
+	  rc = as_u64(static_cast<double>(vb));
+	  break;
+	default:
+	  fesetround(FE_TONEAREST);
+	  goto report_unimplemented;
+	}
+      fesetround(FE_TONEAREST);
+      s->fpr[m.f.rc] = rc;
+      s->fpr[31] = 0;
+      break;
+    }
+
+    case 0x17: { /* FLTL : copies, fp cmov, fpcr, longword converts */
+      uint64_t va = s->fpr[m.f.ra];
+      uint64_t vb = s->fpr[m.f.rb];
+      double db = as_double(s->fpr[m.f.rb]);
+      double da = as_double(va);
+      switch(m.f.func)
+	{
+	case 0x010: /* cvtlq */
+	  s->fpr[m.f.rc] = static_cast<uint64_t>(sext32(((vb >> 32) & 0xc0000000UL) |
+							((vb >> 29) & 0x3fffffffUL)));
+	  break;
+	case 0x020: /* cpys */
+	  s->fpr[m.f.rc] = (va & (1UL << 63)) | (vb & ~(1UL << 63));
+	  break;
+	case 0x021: /* cpysn */
+	  s->fpr[m.f.rc] = ((va & (1UL << 63)) ^ (1UL << 63)) | (vb & ~(1UL << 63));
+	  break;
+	case 0x022: /* cpyse */
+	  s->fpr[m.f.rc] = (va & 0xfff0000000000000UL) | (vb & 0x000fffffffffffffUL);
+	  break;
+	case 0x024: /* mt_fpcr */
+	  s->fpcr = va;
+	  break;
+	case 0x025: /* mf_fpcr */
+	  s->fpr[m.f.ra] = s->fpcr;
+	  break;
+	case 0x02a: /* fcmoveq */
+	  if(da == 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x02b: /* fcmovne */
+	  if(da != 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x02c: /* fcmovlt */
+	  if(da < 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x02d: /* fcmovge */
+	  if(da >= 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x02e: /* fcmovle */
+	  if(da <= 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x02f: /* fcmovgt */
+	  if(da > 0.0) {
+	    s->fpr[m.f.rc] = vb;
+	  }
+	  break;
+	case 0x030: case 0x130: case 0x530: /* cvtql (+ /v /sv) */
+	  s->fpr[m.f.rc] = ((vb & 0xc0000000UL) << 32) | ((vb & 0x3fffffffUL) << 29);
+	  break;
+	default:
+	  goto report_unimplemented;
+	}
+      s->fpr[31] = 0;
+      break;
+    }
+
     case 0x18: /* MISC */
       switch(m.m.disp)
 	{
@@ -469,9 +760,39 @@ void execAlpha(alpha_state_t *s) {
       s->gpr[m.b.ra] = npc;
       npc = npc + (sext21(m.b.disp) << 2);
       break;
+    case 0x31: /* fbeq */
+      if(as_double(s->fpr[m.b.ra]) == 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
+      break;
+    case 0x32: /* fblt */
+      if(as_double(s->fpr[m.b.ra]) < 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
+      break;
+    case 0x33: /* fble */
+      if(as_double(s->fpr[m.b.ra]) <= 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
+      break;
     case 0x34: /* bsr */
       s->gpr[m.b.ra] = npc;
       npc = npc + (sext21(m.b.disp) << 2);
+      break;
+    case 0x35: /* fbne */
+      if(as_double(s->fpr[m.b.ra]) != 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
+      break;
+    case 0x36: /* fbge */
+      if(as_double(s->fpr[m.b.ra]) >= 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
+      break;
+    case 0x37: /* fbgt */
+      if(as_double(s->fpr[m.b.ra]) > 0.0) {
+	npc = npc + (sext21(m.b.disp) << 2);
+      }
       break;
     case 0x38: /* blbc */
       if((s->gpr[m.b.ra] & 1) == 0) {

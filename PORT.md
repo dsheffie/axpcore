@@ -36,11 +36,30 @@ alpha-linux-gnu-gcc-10 -mcpu=ev4 -mbwx -O2 -nostdlib -nostartfiles -static \
 qemu-alpha ./alpha_test > a.txt ; ./alpha_iss -f alpha_test > b.txt ; diff a.txt b.txt
 ```
 
+## csmith diff-testing (running)
+
+- static glibc binaries work under the ISS: linux/alpha process ABI
+  (argc/argv/auxv stack block) + the syscall set a static hello needs
+  (list captured with `qemu-alpha -strace`): brk, mmap(anon), mprotect,
+  fstat64, writev, uname, set_tid_address, prlimit64, readlinkat,
+  getrandom(deterministic), exit_group, ...
+- **scoping discovery: alpha integer division goes through the FPU.**
+  libgcc's `__divqu`/`__remqu` convert to T-float, divide, convert
+  back, and integer-correct.  the ISS grew a minimal fp subset for
+  this (ldt/lds/stt/sts, cpys*, fcmov*, cvtqt/cvttq/cvtts/cvtqs,
+  add/sub/mul/div s/t, cmpt*, fp branches, fpcr w/ rounding modes).
+  consequence for the no-FP RTL core: glibc-compiled code cannot run
+  without either this fp-divide subset in hardware or a soft-float
+  userland (`-msoft-float` + soft-float libgcc; freestanding tests are
+  fine either way).
+- `./csmith_diff.sh N seed0` : csmith -> alpha gcc (ev4+bwx, -O2,
+  static glibc) -> run under qemu-alpha and alpha_iss -> diff stdout +
+  exit codes.  first batches passing.
+
 ## next
 
-1. more ISS validation: random diff-testing vs qemu-alpha (csmith with
-   cross glibc if libc6.1-alpha-cross installs, else generated
-   freestanding tests); directed stw/ldl_l/stl_c tests
+1. keep widening csmith coverage (more seeds, -O0/-O2/-Os, ev4-only vs
+   ev56 codegen variants); directed stw/ldl_l/stl_c tests
 2. RTL decode: `decode_riscv.sv` -> `decode_alpha.sv` (6-bit opcode +
    function field), uop.vh opcode relabel.  reuse the cmov crack for
    register-form CMOVxx; literal form is a single 2-source uop

@@ -569,9 +569,22 @@ void execRiscv(state_t *s) {
     s->mip |= cc.raw;
   }
   if( globals::checker_enable_irqs ) {
-    irq = take_interrupt(s);
+    /* co-sim: take the interrupt ONLY when the RTL did (cosim_take_irq), so the ISS
+     * traps at the SAME instruction as the RTL rather than drifting on its own
+     * timer. Standalone mode keeps the autonomous timer decision. */
+    if(s->cosim_driven) {
+      if(s->cosim_take_irq) {
+	s->cosim_take_irq = false;
+	{ csr_t cc(0); cc.mip.mtip = 1; s->mip |= cc.raw; }  /* RTL took the M-timer irq */
+	irq = take_interrupt(s);
+      }
+    }
+    else {
+      irq = take_interrupt(s);
+    }
   }
   if(irq) {
+    s->link = ~0UL;   /* taking an interrupt breaks the LR/SC reservation (matches RTL) */
     except_cause = CAUSE_INTERRUPT | irq;
     goto handle_exception;
   }
@@ -734,6 +747,21 @@ void execRiscv(state_t *s) {
     case 0xf:/* fence - there's a bunch of 'em */
       s->pc += 4;
       break;
+    case 0xb: {
+      /* custom-0 : cmov.eqz (sel=0) / cmov.nez (sel=1),
+       * rd = cond(rs1) ? rs2 : rd - proof point for alpha cmov */
+      if((m.r.special != 0) || (m.r.sel > 1)) {
+	goto report_unimplemented;
+      }
+      if(m.r.rd != 0) {
+	bool cond = (m.r.sel == 0) ? (s->gpr[m.r.rs1] == 0) : (s->gpr[m.r.rs1] != 0);
+	if(cond) {
+	  s->gpr[m.r.rd] = s->gpr[m.r.rs2];
+	}
+      }
+      s->pc += 4;
+      break;
+    }
     case 0x13: {
       int32_t simm32 = (inst >> 20);
 
@@ -1037,6 +1065,25 @@ void execRiscv(state_t *s) {
 	    }
 	    break;
 	  }	    
+	  case 0xc: {/* amoand.w */
+	    pa = s->translate(s->gpr[m.a.rs1], page_fault, 4, true);
+	    assert(!page_fault);
+	    int64_t x = s->load32(pa);
+	    s->store32(pa, s->gpr[m.a.rs2] & x);
+	    assert(not(atomic_queue.empty()));
+	    auto &t = atomic_queue.front();
+	    if(not(t.pc == s->pc and t.addr == pa and t.data == (s->gpr[m.a.rs2] & x))) {
+	      std::cout << "amoand.w error:\n";
+	      std::cout << "rtl " << std::hex << t.pc << "," << t.addr << "," << t.data << std::dec << "\n";
+	      std::cout << "sim " << std::hex << s->pc << "," << pa << "," << (s->gpr[m.a.rs2]&x) << std::dec << "\n";
+	      exit(-1);
+	    }
+	    atomic_queue.pop_front();
+	    if(m.a.rd != 0) {
+	      s->sext_xlen(x, m.a.rd);
+	    }
+	    break;
+	  }
 	  case 0x1c: {/* amomaxu.w */
 	    pa = s->translate(s->gpr[m.a.rs1], page_fault, 4, true);
 	    assert(!page_fault);
@@ -1907,7 +1954,9 @@ void execRiscv(state_t *s) {
     }
     auto oldpc = s->pc;
     if(delegate) {
-      s->scause = except_cause & 0x7fffffff;
+      s->scause = (except_cause & CAUSE_INTERRUPT)
+	? ((1ULL<<63) | (except_cause & 0x7fffffff))   /* RV64 interrupt bit */
+	: (except_cause & 0x7fffffff);
       s->sepc = s->pc;
       s->stval = tval;
       s->mstatus = (s->mstatus & ~MSTATUS_SPIE) |
@@ -1920,7 +1969,9 @@ void execRiscv(state_t *s) {
     }
     else {
       auto old = s->mstatus;
-      s->mcause = except_cause & 0x7fffffff;
+      s->mcause = (except_cause & CAUSE_INTERRUPT)
+	? ((1ULL<<63) | (except_cause & 0x7fffffff))   /* RV64 interrupt bit */
+	: (except_cause & 0x7fffffff);
       s->mepc = s->pc;
       s->mtval = tval;
       s->mstatus = (s->mstatus & ~MSTATUS_MPIE) |

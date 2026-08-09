@@ -52,6 +52,10 @@ typedef struct packed {
    logic	is_irq;
    logic	valid_dst;
    logic	is_indirect;
+   /* first uop of a cracked cmov pair - retires without an
+    * architectural retirement event (co-sim sees only the pair's
+    * second uop) */
+   logic	is_crack_lo;
    logic [`LG_BPU_TBL_SZ-1:0] bpu_idx;
    
    logic [4:0] ldst;

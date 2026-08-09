@@ -587,11 +587,14 @@ module core(clk,
    uop_t t_uop, t_dec_uop, t_alloc_uop;
    uop_t t_uop2, t_dec_uop2, t_alloc_uop2;
       
-   assign insn_ack = !t_dq_full && insn_valid && (r_state == ACTIVE);
-   assign insn_ack_two = !t_dq_full && 
-			 insn_valid && 
-			 !t_dq_next_full && 
-			 insn_valid_two && (r_state == ACTIVE);
+   assign insn_ack = !t_dq_full && insn_valid && (r_state == ACTIVE) &&
+		     (w_dec_is_cmov ? !t_dq_next_full : 1'b1);
+   assign insn_ack_two = !t_dq_full &&
+			 insn_valid &&
+			 !w_dec_is_cmov &&
+			 !t_dq_next_full &&
+			 insn_valid_two &&
+			 !w_dec2_is_cmov && (r_state == ACTIVE);
    
    assign restart_pc = r_restart_pc;
    assign restart_src_pc = r_restart_src_pc;
@@ -813,14 +816,14 @@ module core(clk,
    	  begin
    	     retire_reg_ptr <= t_mrob_head.ldst;
    	     retire_reg_data <= t_rob_head.data;
-   	     retire_reg_valid <= t_mrob_head.valid_dst & t_retire;
+   	     retire_reg_valid <= t_mrob_head.valid_dst & t_retire & !t_mrob_head.is_crack_lo;
    	     retire_reg_two_ptr <= t_mrob_next_head.ldst;
    	     retire_reg_two_data <= t_rob_next_head.data;
-   	     retire_reg_two_valid <= t_mrob_next_head.valid_dst & t_retire_two;
+   	     retire_reg_two_valid <= t_mrob_next_head.valid_dst & t_retire_two & !t_mrob_next_head.is_crack_lo;
 	     retired_call_ret_addr <= r_rsb[w_rsb_ptr];
 				     
-   	     retire_valid <= t_retire;
-	     retire_two_valid <= t_retire_two;
+   	     retire_valid <= t_retire & !t_mrob_head.is_crack_lo;
+	     retire_two_valid <= t_retire_two & !t_mrob_next_head.is_crack_lo;
 	     rob_empty <= t_rob_empty;
 	     alloc_valid <= t_alloc;
 	     alloc_two_valid <= t_alloc_two;
@@ -1884,6 +1887,7 @@ module core(clk,
 	t_mrob_tail.is_call = (t_alloc_uop.op == JAL) | (t_alloc_uop.op == JALR);
 	t_mrob_tail.is_irq = t_alloc_uop.op == IRQ;
 	t_mrob_tail.is_indirect = (t_alloc_uop.op == JALR) | (t_alloc_uop.op == JR);
+	t_mrob_tail.is_crack_lo = (t_alloc_uop.op == CMOV_EQZ) | (t_alloc_uop.op == CMOV_NEZ);
 	t_mrob_tail.bpu_idx = t_alloc_uop.bpu_idx;
 	
 	t_mrob_tail.valid_dst = t_uop.dst_valid & t_alloc;
@@ -1902,7 +1906,8 @@ module core(clk,
 	t_mrob_next_tail.is_call = (t_alloc_uop2.op == JAL) | (t_alloc_uop2.op == JALR);
 	t_mrob_next_tail.is_irq = t_alloc_uop2.op == IRQ;
 	t_mrob_next_tail.is_indirect = (t_alloc_uop2.op == JALR) | (t_alloc_uop2.op == JR);
-	t_mrob_next_tail.bpu_idx = t_alloc_uop2.bpu_idx;	
+	t_mrob_next_tail.is_crack_lo = (t_alloc_uop2.op == CMOV_EQZ) | (t_alloc_uop2.op == CMOV_NEZ);
+	t_mrob_next_tail.bpu_idx = t_alloc_uop2.bpu_idx;
 	t_mrob_next_tail.valid_dst = t_uop2.dst_valid;
 	t_mrob_next_tail.ldst = t_uop2.dst[4:0];
 	t_mrob_next_tail.pdst = n_prf_entry2;
@@ -2369,10 +2374,28 @@ module core(clk,
 	.syscall_emu(syscall_emu),	
 	.uop(t_dec_uop2)
 	);
-   
-   
+
+   /* cmov.eqz/cmov.nez read their own destination - crack into two
+    * 2-source uops at dispatch.  the low uop tests rs1 and passes the
+    * old value of rd through; the high uop selects rs2 or the
+    * passed-thru value using the predicate bit computed by the low
+    * uop.  both uops architecturally target rd so rename chains them
+    * through the existing intra-bundle bypass with no special cases. */
+   wire	w_dec_is_cmov = (t_dec_uop.op == CMOV_EQZ) | (t_dec_uop.op == CMOV_NEZ);
+   wire	w_dec2_is_cmov = (t_dec_uop2.op == CMOV_EQZ) | (t_dec_uop2.op == CMOV_NEZ);
+
+   uop_t t_dec_uop_lo, t_dec_uop_hi;
+   always_comb
+     begin
+	t_dec_uop_lo = t_dec_uop;
+	t_dec_uop_lo.srcB = t_dec_uop.dst;
+	t_dec_uop_hi = t_dec_uop;
+	t_dec_uop_hi.op = CMOV_HI;
+	t_dec_uop_hi.srcA = t_dec_uop.dst;
+     end
+
    logic t_push_1, t_push_2;
-   
+
    always_comb
      begin
 	t_any_complete = t_complete_valid_1 | core_mem_rsp_valid | t_complete_valid_2;
@@ -2404,8 +2427,8 @@ module core(clk,
 	   .exc_pc(w_exc_pc),
 	   .clear_tlb(w_exec_clear_tlb),
 	   .mode64(r_mode64),
-	   .retire(t_retire),
-	   .retire_two(t_retire_two),
+	   .retire(t_retire & !t_mrob_head.is_crack_lo),
+	   .retire_two(t_retire_two & !t_mrob_next_head.is_crack_lo),
 	   .divide_ready(t_divide_ready),
 `ifdef VERILATOR
 	   .clear_cnt(r_clear_cnt),
@@ -2470,9 +2493,9 @@ module core(clk,
    always_ff@(posedge clk)
      begin
 	if(t_push_dq_one)
-	  r_dq[r_dq_tail_ptr[`LG_DQ_ENTRIES-1:0]] <= t_dec_uop;
+	  r_dq[r_dq_tail_ptr[`LG_DQ_ENTRIES-1:0]] <= w_dec_is_cmov ? t_dec_uop_lo : t_dec_uop;
 	if(t_push_dq_two)
-	  r_dq[r_dq_next_tail_ptr[`LG_DQ_ENTRIES-1:0]] <= t_dec_uop2;
+	  r_dq[r_dq_next_tail_ptr[`LG_DQ_ENTRIES-1:0]] <= w_dec_is_cmov ? t_dec_uop_hi : t_dec_uop2;
      end
 
    always_ff@(negedge clk)
@@ -2522,7 +2545,19 @@ module core(clk,
 	  end
 	else
 	  begin
-	     if(insn_valid && !t_dq_full && !(!t_dq_next_full && insn_valid_two))
+	     if(insn_valid && w_dec_is_cmov)
+	       begin
+		  //push both halves of a cracked cmov, ack one instruction
+		  if(!t_dq_full && !t_dq_next_full)
+		    begin
+		       t_push_dq_one = 1'b1;
+		       t_push_dq_two = 1'b1;
+		       n_dq_tail_ptr = r_dq_tail_ptr + 'd2;
+		       n_dq_next_tail_ptr = r_dq_next_tail_ptr + 'd2;
+		       n_dq_cnt = n_dq_cnt + 'd2;
+		    end
+	       end
+	     else if(insn_valid && !t_dq_full && !(!t_dq_next_full && insn_valid_two && !w_dec2_is_cmov))
 	       begin
 		  //push one instruction
 		  t_push_dq_one = 1'b1;
@@ -2530,11 +2565,11 @@ module core(clk,
 		  n_dq_next_tail_ptr = r_dq_next_tail_ptr + 'd1;
 		  n_dq_cnt = n_dq_cnt + 'd1;
 	       end
-	     else if(insn_valid && !t_dq_full && !t_dq_next_full && insn_valid_two)
+	     else if(insn_valid && !t_dq_full && !t_dq_next_full && insn_valid_two && !w_dec2_is_cmov)
 	       begin
 		  //push two instructions
 		  t_push_dq_one = 1'b1;
-		  t_push_dq_two = 1'b1;		  
+		  t_push_dq_two = 1'b1;
 		  n_dq_tail_ptr = r_dq_tail_ptr + 'd2;
 		  n_dq_next_tail_ptr = r_dq_next_tail_ptr + 'd2;
 		  n_dq_cnt = n_dq_cnt + 'd2;

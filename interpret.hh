@@ -70,6 +70,11 @@ struct state_t{
   bool did_system;
   bool did_rdtime;  
   bool took_exception;
+  /* co-sim interrupt sync: when cosim_driven, the ISS takes interrupts ONLY when
+   * the RTL did (cosim_take_irq set by the checker on tb->took_irq), so it traps at
+   * the SAME instruction instead of drifting on its own timer. */
+  bool cosim_driven = false;
+  bool cosim_take_irq = false;
   riscv_priv priv;
   
   /* lots of CSRs */

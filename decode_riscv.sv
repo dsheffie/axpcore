@@ -269,6 +269,25 @@ module decode_riscv(
 		   end
 	       endcase
 	    end // case: 7'h3
+	  7'hb:
+	    begin
+	       /* custom-0 : cmov.eqz (funct3=0), cmov.nez (funct3=1),
+		* rd = cond(rs1) ? rs2 : rd.  reads its own destination -
+		* cracked into two 2-source uops at dispatch, proof point
+		* for alpha-style cmov */
+	       if((insn[31:25] == 'd0) && (insn[14:13] == 2'b00))
+		 begin
+		    uop.op = (rd == 'd0) ? NOP :
+			     insn[12] ? CMOV_NEZ : CMOV_EQZ;
+		    uop.dst = rd;
+		    uop.dst_valid = (rd != 'd0);
+		    uop.srcA = rs1;
+		    uop.srcA_valid = 1'b1;
+		    uop.srcB = rs2;
+		    uop.srcB_valid = 1'b1;
+		    uop.is_int = 1'b1;
+		 end
+	    end // case: 7'hb
 	  7'hf:
 	    begin
 	       case(insn[14:12])

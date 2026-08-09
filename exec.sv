@@ -908,9 +908,30 @@ module exec(clk,
 	t_mem_srcB = r_fwd_int_mem_srcB ? r_int_result :
 		     r_fwd_mem_mem_srcB ? r_mem_result :
 		     r_fwd_int2_mem_srcB ? r_int_result2 :
-		     w_mem_srcB;	
+		     w_mem_srcB;
      end // always_comb
-   
+
+   /* predicate bit for cracked cmov : the low uop writes it alongside
+    * its register-file write, the high uop consumes it.  cmov uops are
+    * not marked cheap so only pipe 0 executes them - the bit rides
+    * only the pipe 0 result path and the int bank of the prf. */
+   logic [(N_INT_PRF_ENTRIES/2)-1:0] r_cmov_pred;
+   logic			     r_int_pred;
+   wire	w_int_uop_is_cmov_lo = (int_uop.op == CMOV_EQZ) | (int_uop.op == CMOV_NEZ);
+   wire	w_cmov_pred = (int_uop.op == CMOV_EQZ) ? (t_srcA == 'd0) : (t_srcA != 'd0);
+   wire	w_cmov_hi_pred = r_fwd_int_srcA ? r_int_pred :
+	r_cmov_pred[int_uop.srcA[`LG_PRF_ENTRIES-2:0]];
+
+   always_ff@(posedge clk)
+     begin
+	r_int_pred <= w_cmov_pred;
+	if(r_start_int & t_wr_int_prf & w_int_uop_is_cmov_lo)
+	  begin
+	     r_cmov_pred[int_uop.dst[`LG_PRF_ENTRIES-2:0]] <= w_cmov_pred;
+	  end
+     end // always_ff
+
+
    find_first_set#(`LG_INT_SCHED0_ENTRIES) ffs_int_sched_alloc( .in(~r_alu_sched_valid),
 							      .y(t_alu_sched_alloc_ptr));
    
@@ -2562,6 +2583,29 @@ module exec(clk,
 	  CZNEZ:
 	    begin
 	       t_result = !w_srcB_is_zero ? 64'd0 : t_srcA;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMOV_EQZ:
+	    begin
+	       /* low uop of cracked cmov : srcA is the tested reg, srcB
+		* is the old value of rd - pass it through, the
+		* predicate is recorded beside the prf write */
+	       t_result = t_srcB;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMOV_NEZ:
+	    begin
+	       t_result = t_srcB;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMOV_HI:
+	    begin
+	       /* high uop of cracked cmov : srcA is the low uop's
+		* passthrough, srcB is rs2 */
+	       t_result = w_cmov_hi_pred ? t_srcB : t_srcA;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end

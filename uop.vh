@@ -204,6 +204,9 @@ typedef enum logic [7:0]
    FETCH_NOT_EXEC,
    PREFETCH_R,
    IRQ,
+   CMOV_EQZ, //cracked cmov, first uop : test rs1, pass old rd
+   CMOV_NEZ,
+   CMOV_HI, //cracked cmov, second uop : select rs2 or passed-thru old rd
    II //illegal instruction
    } opcode_t;
 

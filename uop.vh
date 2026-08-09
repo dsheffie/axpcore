@@ -207,6 +207,56 @@ typedef enum logic [7:0]
    CMOV_EQZ, //cracked cmov, first uop : test rs1, pass old rd
    CMOV_NEZ,
    CMOV_HI, //cracked cmov, second uop : select rs2 or passed-thru old rd
+   /* alpha ops.  reg-or-lit8 second operand : the lit form clears
+    * srcB_valid and carries the literal in rvimm, exec muxes
+    * opB = srcB_valid ? srcB : rvimm.  where an alpha op is
+    * semantically identical to an rv64 op above (addq=ADDU, bic=ANDN,
+    * s4addq=SH2ADD, mulq=MUL, ...) decode_alpha reuses that enum. */
+   S4ADDL, //sext32((a<<2)+b)
+   S8ADDL,
+   S4SUBL,
+   S8SUBL,
+   S4SUBQ,
+   S8SUBQ,
+   CMPEQ, //a == b -> 0/1
+   CMPLE,
+   CMPULE,
+   CMPBGE, //per-byte unsigned >=, 8-bit result
+   BEQZ, //alpha branches test one register against zero
+   BNEZ,
+   BLTZ,
+   BGEZ,
+   BLEZ,
+   BGTZ,
+   BLBC,
+   BLBS,
+   ZAP,
+   ZAPNOT,
+   EXTBL,
+   EXTWL,
+   EXTLL,
+   EXTQL,
+   EXTWH,
+   EXTLH,
+   EXTQH,
+   INSBL,
+   INSWL,
+   INSLL,
+   INSQL,
+   INSWH,
+   INSLH,
+   INSQH,
+   MSKBL,
+   MSKWL,
+   MSKLL,
+   MSKQL,
+   MSKWH,
+   MSKLH,
+   MSKQH,
+   CMOV_LO, //alpha cmov marker/low uop, condition in imm[2:0]
+   CMOV_LIT, //alpha cmov literal form, single uop : cond(srcA) ? rvimm : srcB(old rc)
+   LDQU, //ldq_u : quad load, ea low 3 bits cleared at the agu
+   STQU,
    II //illegal instruction
    } opcode_t;
 

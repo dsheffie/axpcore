@@ -56,10 +56,47 @@ qemu-alpha ./alpha_test > a.txt ; ./alpha_iss -f alpha_test > b.txt ; diff a.txt
   static glibc) -> run under qemu-alpha and alpha_iss -> diff stdout +
   exit codes.  first batches passing.
 
+## decode_alpha.sv (done, not yet wired into core.sv)
+
+- drop-in port shape of decode_riscv; lint-clean.  key conventions
+  (documented in the file header):
+  - one opcode_t per alpha instruction : lit8 form clears srcB_valid,
+    literal rides in rvimm, exec will mux opB = srcB_valid ? srcB : rvimm
+  - reuses semantically-identical rv64 enums (ADDU=addq ADDW=addl
+    SH2ADD=s4addq ANDN=bic ORN=ornot XNOR=eqv MUL/MULW/MULHU
+    SLT/SLTU LB../SD LRW/SCW JAL/JALR/JR/RET ...); ~45 new enums in
+    uop.vh (scaled l/sub, cmpeq/cmple/cmpule/cmpbge, ble/bgt/blbc/blbs,
+    23 zapper ops, CMOV_LO/CMOV_LIT, LDQU/STQU)
+  - alpha branches get their own test-vs-zero enums
+    (BEQZ/BNEZ/BLTZ/BGEZ/BLEZ/BGTZ/BLBC/BLBS) so exec supports both
+    ISAs additively - the rv64 build keeps working as a regression
+    baseline until the switchover
+  - r31 = zero reg : dst_valid=(r!=31), r31-dest ops fold to NOP
+  - cmov condition in imm[2:0] (0=eq 1=ne 2=lt 3=ge 4=le 5=gt 6=lbs
+    7=lbc); register form emits the CMOV_LO crack marker, literal form
+    is single-uop CMOV_LIT (srcB = old rc)
+  - fault/irq slots park on unallocated opcode 0x01 (0x00 is CALL_PAL!)
+  - call_pal 0x83 -> MONITOR (syscall_emu), 0x86 imb -> FENCEI
+- unit test : tb_decode_alpha.{sv,cc} runs every .text word of the
+  three compiled test binaries through the decoder, checks against an
+  independent opcode-map model.  924 words, 0 unexpected II, 0
+  classification mismatches.
+  build: verilator --cc --exe --build tb_decode_alpha.sv
+  tb_decode_alpha.cc (link needs LDFLAGS="-flto -O2" - the installed
+  verilated.mk compiles with -flto)
+
 ## next
 
-1. keep widening csmith coverage (more seeds, -O0/-O2/-Os, ev4-only vs
+1. exec.sv port : alpha arms with the opB idiom, byte-zapper unit,
+   Z-branch arms, CMOV_LO/CMOV_LIT/CMOV_HI arms (predicate from
+   imm[2:0]), LDQU/STQU agu masking; core.sv crack keys on CMOV_LO;
+   stx_c polarity in nu_l1d (div/AMO deletion waits for the
+   switchover commit so rv64 regressions keep running)
+2. fetch/predecode : sext21<<2 displacement, pd from opcode+hint bits
+3. keep widening csmith coverage (more seeds, -O0/-O2/-Os, ev4-only vs
    ev56 codegen variants); directed stw/ldl_l/stl_c tests
+4. call_pal rduniq/wruniq (0x9e/0x9f) currently II - needed for TLS
+   (static glibc errno) when the RTL runs glibc binaries
 2. RTL decode: `decode_riscv.sv` -> `decode_alpha.sv` (6-bit opcode +
    function field), uop.vh opcode relabel.  reuse the cmov crack for
    register-form CMOVxx; literal form is a single 2-source uop

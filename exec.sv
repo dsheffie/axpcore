@@ -917,8 +917,51 @@ module exec(clk,
     * only the pipe 0 result path and the int bank of the prf. */
    logic [(N_INT_PRF_ENTRIES/2)-1:0] r_cmov_pred;
    logic			     r_int_pred;
-   wire	w_int_uop_is_cmov_lo = (int_uop.op == CMOV_EQZ) | (int_uop.op == CMOV_NEZ);
-   wire	w_cmov_pred = (int_uop.op == CMOV_EQZ) ? (t_srcA == 'd0) : (t_srcA != 'd0);
+   /* alpha cmov condition codes, from decode's imm[2:0] :
+    * 0=eq 1=ne 2=lt 3=ge 4=le 5=gt 6=lbs 7=lbc */
+   function logic alpha_cmov_cond(logic [2:0] c, logic [63:0] v);
+      logic x;
+      case(c)
+	3'd0:
+	  begin
+	     x = (v == 'd0);
+	  end
+	3'd1:
+	  begin
+	     x = (v != 'd0);
+	  end
+	3'd2:
+	  begin
+	     x = v[63];
+	  end
+	3'd3:
+	  begin
+	     x = !v[63];
+	  end
+	3'd4:
+	  begin
+	     x = v[63] | (v == 'd0);
+	  end
+	3'd5:
+	  begin
+	     x = !v[63] & (v != 'd0);
+	  end
+	3'd6:
+	  begin
+	     x = v[0];
+	  end
+	3'd7:
+	  begin
+	     x = !v[0];
+	  end
+      endcase // case (c)
+      return x;
+   endfunction // alpha_cmov_cond
+
+   wire	w_int_uop_is_cmov_lo = (int_uop.op == CMOV_EQZ) | (int_uop.op == CMOV_NEZ) | (int_uop.op == CMOV_LO);
+   wire	w_cmov_pred = (int_uop.op == CMOV_EQZ) ? (t_srcA == 'd0) :
+	(int_uop.op == CMOV_NEZ) ? (t_srcA != 'd0) :
+	alpha_cmov_cond(int_uop.imm[2:0], t_srcA);
    wire	w_cmov_hi_pred = r_fwd_int_srcA ? r_int_pred :
 	r_cmov_pred[int_uop.srcA[`LG_PRF_ENTRIES-2:0]];
 
@@ -930,6 +973,20 @@ module exec(clk,
 	     r_cmov_pred[int_uop.dst[`LG_PRF_ENTRIES-2:0]] <= w_cmov_pred;
 	  end
      end // always_ff
+
+   /* alpha reg-or-lit8 operand B : decode clears srcB_valid for the
+    * literal form and parks the literal in rvimm */
+   wire [63:0]	w_opB = int_uop.srcB_valid ? t_srcB : int_uop.rvimm;
+   wire [63:0]	w_opB_2 = int_uop2.srcB_valid ? t_srcB_2 : int_uop2.rvimm;
+
+   wire [63:0]	w_zapper_out;
+   alpha_zapper zap0
+     (
+      .op(int_uop.op),
+      .a(t_srcA),
+      .b(w_opB),
+      .y(w_zapper_out)
+      );
 
 
    find_first_set#(`LG_INT_SCHED0_ENTRIES) ffs_int_sched_alloc( .in(~r_alu_sched_valid),
@@ -1275,6 +1332,12 @@ module exec(clk,
 	       (int_uop.op == SH1ADD) ? {t_srcA[62:0], 1'b0} :
 	       (int_uop.op == SH2ADD) ? {t_srcA[61:0], 2'b0} :
 	       (int_uop.op == SH3ADD) ? {t_srcA[60:0], 3'b0} :
+	       (int_uop.op == S4ADDL) ? {t_srcA[61:0], 2'b0} :
+	       (int_uop.op == S4SUBL) ? {t_srcA[61:0], 2'b0} :
+	       (int_uop.op == S4SUBQ) ? {t_srcA[61:0], 2'b0} :
+	       (int_uop.op == S8ADDL) ? {t_srcA[60:0], 3'b0} :
+	       (int_uop.op == S8SUBL) ? {t_srcA[60:0], 3'b0} :
+	       (int_uop.op == S8SUBQ) ? {t_srcA[60:0], 3'b0} :
 	       (int_uop.op == SH1ADD_UW) ? {31'd0, t_srcA[31:0], 1'b0} :
 	       (int_uop.op == SH2ADD_UW) ? {30'd0, t_srcA[31:0], 2'b0} :
 	       (int_uop.op == SH3ADD_UW) ? {29'd0, t_srcA[31:0], 3'b0} :	       
@@ -1285,6 +1348,12 @@ module exec(clk,
 	       (int_uop2.op == SH1ADD) ? {t_srcA_2[62:0], 1'b0} :
 	       (int_uop2.op == SH2ADD) ? {t_srcA_2[61:0], 2'b0} :
 	       (int_uop2.op == SH3ADD) ? {t_srcA_2[60:0], 3'b0} :
+	       (int_uop2.op == S4ADDL) ? {t_srcA_2[61:0], 2'b0} :
+	       (int_uop2.op == S4SUBL) ? {t_srcA_2[61:0], 2'b0} :
+	       (int_uop2.op == S4SUBQ) ? {t_srcA_2[61:0], 2'b0} :
+	       (int_uop2.op == S8ADDL) ? {t_srcA_2[60:0], 3'b0} :
+	       (int_uop2.op == S8SUBL) ? {t_srcA_2[60:0], 3'b0} :
+	       (int_uop2.op == S8SUBQ) ? {t_srcA_2[60:0], 3'b0} :
 	       (int_uop2.op == SH1ADD_UW) ? {31'd0, t_srcA_2[31:0], 1'b0} :
 	       (int_uop2.op == SH2ADD_UW) ? {30'd0, t_srcA_2[31:0], 2'b0} :
 	       (int_uop2.op == SH3ADD_UW) ? {29'd0, t_srcA_2[31:0], 3'b0} :	       
@@ -1295,7 +1364,7 @@ module exec(clk,
    addsub #(.W(64)) as0 
      (
       .A(w_srcA_shl), 
-      .B(t_addi ? int_uop.rvimm : t_srcB), 
+      .B(t_addi ? int_uop.rvimm : w_opB), 
       .is_sub(t_sub), 
       .Y(w_as64_)
       );
@@ -1303,7 +1372,7 @@ module exec(clk,
    addsub #(.W(64)) as1
      (
       .A(w_srcA_shl_2), 
-      .B(t_addi_2 ? int_uop2.rvimm : t_srcB_2), 
+      .B(t_addi_2 ? int_uop2.rvimm : w_opB_2), 
       .is_sub(t_sub2), 
       .Y(w_as64_2_)
       );
@@ -1322,8 +1391,8 @@ module exec(clk,
    
    wire	       w_mispredicted_indirect2 = w_indirect_target2 != w_fe_indirect_target2;
    
-   wire	       w_signed_A_lt_B_2 = $signed(t_srcA_2) < $signed(t_srcB_2);
-   wire	       w_A_lt_B_2 = t_srcA_2 < t_srcB_2;   
+   wire	       w_signed_A_lt_B_2 = $signed(t_srcA_2) < $signed(w_opB_2);
+   wire	       w_A_lt_B_2 = t_srcA_2 < w_opB_2;   
    wire [63:0]	       w_bswap_srcA_2;
    generate
       for(genvar i = 0; i < 8; i=i+1)
@@ -1429,6 +1498,120 @@ module exec(clk,
 	       t_pc_2 = w_indirect_target2;
 	       t_alu_valid2 = 1'b1;
 	    end	  
+	  BEQZ:
+	    begin
+	       t_take_br2 = (t_srcA_2 == 'd0);
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BNEZ:
+	    begin
+	       t_take_br2 = (t_srcA_2 != 'd0);
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BLTZ:
+	    begin
+	       t_take_br2 = t_srcA_2[63];
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BGEZ:
+	    begin
+	       t_take_br2 = !t_srcA_2[63];
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BLEZ:
+	    begin
+	       t_take_br2 = t_srcA_2[63] | (t_srcA_2 == 'd0);
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BGTZ:
+	    begin
+	       t_take_br2 = !t_srcA_2[63] & (t_srcA_2 != 'd0);
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BLBC:
+	    begin
+	       t_take_br2 = !t_srcA_2[0];
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  BLBS:
+	    begin
+	       t_take_br2 = t_srcA_2[0];
+	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
+	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  CMPEQ:
+	    begin
+	       t_result2 = {63'd0, t_srcA_2 == w_opB_2};
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  CMPLE:
+	    begin
+	       t_result2 = {63'd0, $signed(t_srcA_2) <= $signed(w_opB_2)};
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  CMPULE:
+	    begin
+	       t_result2 = {63'd0, t_srcA_2 <= w_opB_2};
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S4ADDL:
+	    begin
+	       t_result2 = w_as64_2_sext;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S8ADDL:
+	    begin
+	       t_result2 = w_as64_2_sext;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S4SUBL:
+	    begin
+	       t_sub2 = 1'b1;
+	       t_result2 = w_as64_2_sext;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S8SUBL:
+	    begin
+	       t_sub2 = 1'b1;
+	       t_result2 = w_as64_2_sext;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S4SUBQ:
+	    begin
+	       t_sub2 = 1'b1;
+	       t_result2 = w_as64_2;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
+	  S8SUBQ:
+	    begin
+	       t_sub2 = 1'b1;
+	       t_result2 = w_as64_2;
+	       t_wr_int_prf2 = 1'b1;
+	       t_alu_valid2 = 1'b1;
+	    end
 	  ADDI:
 	    begin
 	       t_addi_2 = 1'b1;
@@ -1608,7 +1791,7 @@ module exec(clk,
 	    end	  
 	  SRL:
 	    begin
-	       t_shift_amt2 = {(mode64 ? t_srcB_2[5] : 1'b0), t_srcB_2[4:0]};	
+	       t_shift_amt2 = {(mode64 ? w_opB_2[5] : 1'b0), w_opB_2[4:0]};	
 	       t_result2 = w_shifter_out2;
 	       t_wr_int_prf2 = 1'b1;
 	       t_alu_valid2 = 1'b1;
@@ -1625,7 +1808,7 @@ module exec(clk,
 	  SRA:
 	    begin
 	       t_signed_shift2 = 1'b1;
-	       t_shift_amt2 = {(mode64 ? t_srcB_2[5] : 1'b0), t_srcB_2[4:0]};	       
+	       t_shift_amt2 = {(mode64 ? w_opB_2[5] : 1'b0), w_opB_2[4:0]};	       
 	       t_result2 = w_shifter_out2;
 	       t_wr_int_prf2 = 1'b1;
 	       t_alu_valid2 = 1'b1;
@@ -1677,7 +1860,7 @@ module exec(clk,
 	  SLL:
 	    begin
 	       t_left_shift2 = 1'b1;
-	       t_shift_amt2 = {(mode64 ? t_srcB_2[5] : 1'b0), t_srcB_2[4:0]};
+	       t_shift_amt2 = {(mode64 ? w_opB_2[5] : 1'b0), w_opB_2[4:0]};
 	       t_result2 = w_shifter_out2;
 	       t_wr_int_prf2 = 1'b1;
 	       t_alu_valid2 = 1'b1;
@@ -1911,7 +2094,7 @@ module exec(clk,
       .is_fp_sub(t_is_fp_sub),
       .is_fp_mul(t_is_fp_mul),
       .src_A(t_srcA),
-      .src_B(t_srcB),
+      .src_B(w_opB),
       .rob_ptr_in(int_uop.rob_ptr),
       .prf_ptr_in(int_uop.dst),
       .y(t_mul_result),
@@ -2144,8 +2327,8 @@ module exec(clk,
    wire		       w_srcB_is_zero = (t_srcB == 64'd0);
    wire		       w_srcB_is_zero_2 = (t_srcB_2 == 64'd0);   
    
-   wire		       w_signed_A_lt_B = $signed(t_srcA) < $signed(t_srcB);
-   wire		       w_A_lt_B = t_srcA < t_srcB;
+   wire		       w_signed_A_lt_B = $signed(t_srcA) < $signed(w_opB);
+   wire		       w_A_lt_B = t_srcA < w_opB;
    wire [63:0]	       w_bswap_srcA;
    generate
       for(genvar i = 0; i < 8; i=i+1)
@@ -2609,6 +2792,145 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
+	  CMOV_LO:
+	    begin
+	       /* alpha register-form cmov, low uop : pass old rc (srcB
+		* after the crack) through, predicate recorded beside
+		* the prf write */
+	       t_result = t_srcB;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMOV_LIT:
+	    begin
+	       /* alpha literal-form cmov, single uop : srcB is old rc */
+	       t_result = alpha_cmov_cond(int_uop.imm[2:0], t_srcA) ? int_uop.rvimm : t_srcB;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  BEQZ:
+	    begin
+	       t_take_br = (t_srcA == 'd0);
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BNEZ:
+	    begin
+	       t_take_br = (t_srcA != 'd0);
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BLTZ:
+	    begin
+	       t_take_br = t_srcA[63];
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BGEZ:
+	    begin
+	       t_take_br = !t_srcA[63];
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BLEZ:
+	    begin
+	       t_take_br = t_srcA[63] | (t_srcA == 'd0);
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BGTZ:
+	    begin
+	       t_take_br = !t_srcA[63] & (t_srcA != 'd0);
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BLBC:
+	    begin
+	       t_take_br = !t_srcA[0];
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  BLBS:
+	    begin
+	       t_take_br = t_srcA[0];
+	       t_mispred_br = int_uop.br_pred != t_take_br;
+	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMPEQ:
+	    begin
+	       t_result = {63'd0, t_srcA == w_opB};
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMPLE:
+	    begin
+	       t_result = {63'd0, $signed(t_srcA) <= $signed(w_opB)};
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  CMPULE:
+	    begin
+	       t_result = {63'd0, t_srcA <= w_opB};
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S4ADDL:
+	    begin
+	       t_result = w_as64_sext;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S8ADDL:
+	    begin
+	       t_result = w_as64_sext;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S4SUBL:
+	    begin
+	       t_sub = 1'b1;
+	       t_result = w_as64_sext;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S8SUBL:
+	    begin
+	       t_sub = 1'b1;
+	       t_result = w_as64_sext;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S4SUBQ:
+	    begin
+	       t_sub = 1'b1;
+	       t_result = w_as64;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  S8SUBQ:
+	    begin
+	       t_sub = 1'b1;
+	       t_result = w_as64;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
+	  ZAP, ZAPNOT, CMPBGE,
+	  EXTBL, EXTWL, EXTLL, EXTQL, EXTWH, EXTLH, EXTQH,
+	  INSBL, INSWL, INSLL, INSQL, INSWH, INSLH, INSQH,
+	  MSKBL, MSKWL, MSKLL, MSKQL, MSKWH, MSKLH, MSKQH:
+	    begin
+	       t_result = w_zapper_out;
+	       t_wr_int_prf = 1'b1;
+	       t_alu_valid = 1'b1;
+	    end
 	  BGE:
 	    begin
 	       t_take_br = $signed(t_srcA) >= $signed(t_srcB);
@@ -2706,7 +3028,7 @@ module exec(clk,
 	  SLL:
 	    begin
 	       t_left_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? t_srcB[5] : 1'b0), t_srcB[4:0]};
+	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
@@ -2841,7 +3163,7 @@ module exec(clk,
 	  ROR:
 	    begin
 	       t_circular_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? t_srcB[5] : 1'b0), t_srcB[4:0]};	       
+	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
@@ -2876,7 +3198,7 @@ module exec(clk,
 	    begin
 	       t_circular_shift = 1'b1;
 	       t_left_shift = 1'b1;	       
-	       t_shift_amt = {(mode64 ? t_srcB[5] : 1'b0), t_srcB[4:0]};	       
+	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
@@ -2911,14 +3233,14 @@ module exec(clk,
 	  SRA:
 	    begin
 	       t_signed_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? t_srcB[5] : 1'b0), t_srcB[4:0]};
+	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
 	  SRL:
 	    begin
-	       t_shift_amt = {(mode64 ? t_srcB[5] : 1'b0), t_srcB[4:0]};	       
+	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
@@ -3984,6 +4306,21 @@ module exec(clk,
 	       t_mem_tail.spans_cacheline = w_bad_64b_addr;
 	       t_mem_tail.unaligned = |w_agu_addr[2:0];
 	    end // case: SW
+	  LDQU:
+	    begin
+	       /* ldq_u : quad load with the low address bits cleared */
+	       t_mem_tail.is_load = 1'b1;
+	       t_mem_tail.op = MEM_LD;
+	       t_mem_tail.addr = {w_agu_addr[`M_WIDTH-1:3], 3'd0};
+	       t_mem_tail.dst_valid = mem_uop.dst_valid;
+	    end
+	  STQU:
+	    begin
+	       t_mem_tail.op = MEM_SD;
+	       t_mem_tail.is_store = 1'b1;
+	       t_mem_tail.addr = {w_agu_addr[`M_WIDTH-1:3], 3'd0};
+	       t_mem_tail.dst_valid = 1'b0;
+	    end
 	  SCW:
 	    begin
 	       t_mem_tail.op = MEM_SCW;

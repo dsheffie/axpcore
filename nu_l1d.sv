@@ -1782,7 +1782,11 @@ module nu_l1d(clk,
 	    end
 	  MEM_SCD:
 	    begin
+`ifdef ALPHA
+	       t_rsp_data = {63'd0, w_match_link};
+`else
 	       t_rsp_data = {63'd0, ~w_match_link};
+`endif
 	       t_array_data = (t_store_shift & t_store_mask) | ((~t_store_mask) & t_data);
 	       t_wr_store = w_match_link && t_hit_cache && 
 			    (r_is_retry || r_did_reload) & (!r_req.has_cause);
@@ -1791,7 +1795,11 @@ module nu_l1d(clk,
 	    end
 	  MEM_SCW:
 	    begin
-	       t_rsp_data = {63'd0, ~w_match_link};	       
+`ifdef ALPHA
+	       t_rsp_data = {63'd0, w_match_link};
+`else
+	       t_rsp_data = {63'd0, ~w_match_link};
+`endif
 	       t_array_data = (t_store_shift & t_store_mask) | ((~t_store_mask) & t_data);
 	       t_wr_store = w_match_link & t_hit_cache & 
 			    (r_is_retry | r_did_reload) & (!r_req.has_cause);

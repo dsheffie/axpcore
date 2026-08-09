@@ -81,33 +81,47 @@ qemu-alpha ./alpha_test > a.txt ; ./alpha_iss -f alpha_test > b.txt ; diff a.txt
   three compiled test binaries through the decoder, checks against an
   independent opcode-map model.  924 words, 0 unexpected II, 0
   classification mismatches.
-  build: verilator --cc --exe --build tb_decode_alpha.sv
+  build: verilator -Mdir tb_obj --cc --exe --build tb_decode_alpha.sv
   tb_decode_alpha.cc (link needs LDFLAGS="-flto -O2" - the installed
   verilated.mk compiles with -flto)
 
-## next
+## exec.sv alpha support (done, additive - rv64 regressions still green)
 
-1. exec.sv port : alpha arms with the opB idiom, byte-zapper unit,
-   Z-branch arms, CMOV_LO/CMOV_LIT/CMOV_HI arms (predicate from
-   imm[2:0]), LDQU/STQU agu masking; core.sv crack keys on CMOV_LO;
-   stx_c polarity in nu_l1d (div/AMO deletion waits for the
-   switchover commit so rv64 regressions keep running)
-2. fetch/predecode : sext21<<2 displacement, pd from opcode+hint bits
-3. keep widening csmith coverage (more seeds, -O0/-O2/-Os, ev4-only vs
-   ev56 codegen variants); directed stw/ldl_l/stl_c tests
-4. call_pal rduniq/wruniq (0x9e/0x9f) currently II - needed for TLS
+- opB idiom wired through both pipes : addsub B mux, comparator wires,
+  reg-form shift amounts, multiplier srcB all take
+  `w_opB = srcB_valid ? t_srcB : rvimm` (riscv-safe : riscv reg ops
+  always have srcB_valid=1)
+- new arms both pipes : Z-branches (single-source, outside the
+  TWO_SRC_CHEAP guard on pipe1), CMPEQ/CMPLE/CMPULE, scaled l/sub
+  variants via extended w_srcA_shl muxes
+- alpha_zapper.sv : ext/ins/msk x bwlq x l/h, zap/zapnot, cmpbge in
+  one unit on pipe 0 (byte-granular shifts = cheap muxes), one grouped
+  case arm consumes it
+- CMOV_LO/CMOV_LIT arms + alpha_cmov_cond() (8 conditions from
+  imm[2:0]); predicate write and the core.sv crack now also key on
+  CMOV_LO
+- agu : LDQU/STQU arms (addr low 3 bits cleared, plain MEM_LD/MEM_SD)
+- nu_l1d stx_c success polarity behind `ALPHA (stub define in
+  machine.vh, off until switchover)
+- validated : full build + rv64 cmov_test (crack regression) + csmith
+  test-0 co-sim all clean with the alpha machinery compiled in
+- gotcha : don't build tb_decode_alpha into obj_dir (the main Makefile
+  globs obj_dir/*.o) - use -Mdir tb_obj
+
+## next : the switchover (first alpha co-sim)
+
+1. fetch/predecode : sext21<<2 displacement extraction in l1i_2way,
+   predecode from opcode + jmp hint bits (pd taxonomy maps 1:1)
+2. core.sv : instantiate decode_alpha instead of decode_riscv; define
+   `ALPHA; delete div/AMO paths at this point
+3. harness : loadelf EM_ALPHA + alpha reset path, top.cc checker
+   drives execAlpha (retire-compare loop is reusable), hand-rolled
+   disassembler (capstone has no alpha backend)
+4. keep widening ISS csmith coverage (more seeds, -O0/-Os, ev4-only /
+   ev56 variants); directed stw/ldl_l/stl_c tests
+5. call_pal rduniq/wruniq (0x9e/0x9f) currently II - needed for TLS
    (static glibc errno) when the RTL runs glibc binaries
-2. RTL decode: `decode_riscv.sv` -> `decode_alpha.sv` (6-bit opcode +
-   function field), uop.vh opcode relabel.  reuse the cmov crack for
-   register-form CMOVxx; literal form is a single 2-source uop
-3. exec.sv ALU relabel + byte-zapper unit; delete divider/AMO paths;
-   STx_C success polarity flip (alpha writes 1) in nu_l1d.sv
-4. fetch: branch displacement = sext(disp21)<<2 (replaces B/J-type
-   scrambles); predecode from opcode + jmp hint bits (pd taxonomy maps
-   1:1, see scoping discussion)
-5. harness: top.cc checker to alpha (retire compare loop is reusable),
-   loadelf EM_ALPHA, hand-rolled disassembler (capstone has no alpha)
-6. deferred: privilege model decision (PALcode vs retargeted hardware
+6. deferred : privilege model decision (PALcode vs retargeted hardware
    walker) - only after user-mode co-sim is clean
 
 ## conventions

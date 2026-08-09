@@ -173,6 +173,50 @@ static inline int alpha_rnd(uint32_t rnd, uint64_t fpcr) {
     }
 }
 
+/* call_pal 0xb0 : the htif escape used by RTL co-sim binaries.
+ * magic-mem convention matching the rv64 harness (syscall.cc) : odd
+ * tohost = exit, else tohost points at buf[8] with buf[0] = syscall
+ * number.  arch effects (result in buf[0], tohost cleared, fromhost
+ * set) are computed deterministically so the checker stays in sync;
+ * host i/o is skipped when cosim_driven (the harness does it). */
+static void handle_htif_monitor(alpha_state_t *s) {
+  if(s->tohost_addr == 0) {
+    fprintf(stderr, "alpha_interp: call_pal 0xb0 with no tohost symbol\n");
+    exit(-1);
+  }
+  uint64_t th = s->load64(s->tohost_addr);
+  if(th == 0) {
+    return;
+  }
+  if(th & 1) {
+    s->brk = 1;
+    s->exit_code = static_cast<int>(th >> 1);
+    return;
+  }
+  uint64_t buf = th & ((1UL << 32) - 1);
+  int64_t n = s->load64(buf);
+  switch(n)
+    {
+    case 64: { /* SYS_write */
+      uint64_t fd = s->load64(buf + 8);
+      uint64_t ptr = s->load64(buf + 16);
+      uint64_t len = s->load64(buf + 24);
+      if(!s->cosim_driven) {
+	ssize_t rc = write(fd, s->mem + ptr, len);
+	(void)rc;
+      }
+      s->store64(buf, len);
+      break;
+    }
+    default:
+      fprintf(stderr, "alpha_interp: unimplemented htif syscall %ld at pc %lx\n",
+	      n, s->pc);
+      exit(-1);
+    }
+  s->store64(s->tohost_addr, 0);
+  s->store64(s->fromhost_addr, 1);
+}
+
 void execAlpha(alpha_state_t *s) {
   alpha_t m;
   uint64_t pc = s->pc;
@@ -203,6 +247,9 @@ void execAlpha(alpha_state_t *s) {
 	  break;
 	case 0x9f: /* wrunique */
 	  s->unique = s->gpr[16];
+	  break;
+	case 0xb0: /* htif escape (co-sim convention) */
+	  handle_htif_monitor(s);
 	  break;
 	default:
 	  fprintf(stderr, "alpha_interp: unimplemented call_pal %x at pc %lx\n",

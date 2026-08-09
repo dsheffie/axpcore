@@ -1,28 +1,37 @@
-/* first directed test for the alpha ISS : integer mix (arith, logic,
- * shifts, cmov, mul, byte zapper via unaligned access, ldq_u/stq_u,
- * bit ops) with results printed as hex over callsys write.  runs
- * identically under qemu-alpha - diff the outputs.
+/* co-sim variant of alpha_test.c : same integer mix, but I/O and exit
+ * go through the htif convention the RTL harness understands - magic
+ * mem block + tohost + call_pal 0xb0 (decoded to MONITOR).  results
+ * come back in memory, so the ISS checker stays in lockstep with no
+ * register injection.
  *
  * build:
  *  alpha-linux-gnu-gcc-10 -mcpu=ev4 -mbwx -O2 -nostdlib -nostartfiles \
- *    -static alpha_start.S alpha_test.c -o alpha_test
+ *    -static -Wl,-Ttext-segment=0x20000000 alpha_start.S \
+ *    alpha_cosim_test.c -o alpha_cosim_test
  */
 #include <stdint.h>
 
-static long callsys3(long n, long a, long b, long c) {
-  register long v0 asm("$0") = n;
-  register long a0 asm("$16") = a;
-  register long a1 asm("$17") = b;
-  register long a2 asm("$18") = c;
-  asm volatile("call_pal 0x83"
-	       : "+r"(v0), "+r"(a0), "+r"(a1), "+r"(a2)
-	       :
-	       : "$19", "$20", "$21", "$22", "$23", "$24", "$25", "$27", "$28", "memory");
-  return v0;
+volatile uint64_t tohost __attribute__((aligned(64)));
+volatile uint64_t fromhost __attribute__((aligned(64)));
+
+uint64_t stack[1024] __attribute__((aligned(16)));
+asm(".globl stack_end\nstack_end = stack+8192");
+
+static volatile uint64_t htif_buf[8] __attribute__((aligned(64)));
+
+static void htif_write(const char *buf, uint64_t len) {
+  htif_buf[0] = 64; /* SYS_write */
+  htif_buf[1] = 1;
+  htif_buf[2] = (uint64_t)buf;
+  htif_buf[3] = len;
+  tohost = (uint64_t)htif_buf;
+  asm volatile("call_pal 0xb0" ::: "memory");
 }
 
-static void print(const char *buf, long len) {
-  callsys3(4, 1, (long)buf, len);
+static void terminate(uint64_t code) {
+  tohost = (code << 1) | 1;
+  asm volatile("call_pal 0xb0" ::: "memory");
+  for(;;);
 }
 
 static void print_hex(const char *tag, uint64_t v) {
@@ -38,7 +47,7 @@ static void print_hex(const char *tag, uint64_t v) {
     buf[n++] = (nib < 10) ? ('0' + nib) : ('a' + nib - 10);
   }
   buf[n++] = '\n';
-  print(buf, n);
+  htif_write(buf, n);
 }
 
 static inline uint64_t xorshift64(uint64_t x) {
@@ -51,24 +60,21 @@ static inline uint64_t xorshift64(uint64_t x) {
 uint8_t bytes[256];
 uint64_t quads[64];
 
-uint64_t stack[1024] __attribute__((aligned(16)));
-asm(".globl stack_end\nstack_end = stack+8192");
-
 int main(void) {
   uint64_t r = 0x123456789abcdef1UL;
   uint64_t acc = 0;
 
-  for(int i = 0; i < 256; i++) {
-    r = xorshift64(r);
-    bytes[i] = r;
-  }
   for(int i = 0; i < 64; i++) {
     r = xorshift64(r);
+    bytes[i] = r;
+    bytes[64 + i] = r >> 8;
+    bytes[128 + i] = r >> 16;
+    bytes[192 + i] = r >> 24;
     quads[i] = r;
   }
 
-  /* arithmetic + compares + cmov (compiler emits cmovxx for ternaries) */
-  for(int i = 0; i < 1000; i++) {
+  /* arithmetic + compares + cmov */
+  for(int i = 0; i < 500; i++) {
     r = xorshift64(r);
     int64_t a = r, b = quads[i & 63];
     acc += a + b;
@@ -81,8 +87,7 @@ int main(void) {
   }
   print_hex("arith", acc);
 
-  /* unaligned loads/stores at every alignment - ldq_u/extxl/extxh or
-   * bwx forms depending on what gcc picked */
+  /* unaligned loads/stores at every alignment - zapper or bwx */
   acc = 0;
   for(int i = 0; i < 240; i++) {
     uint16_t w;
@@ -97,7 +102,7 @@ int main(void) {
   }
   print_hex("unalgn", acc);
 
-  /* byte ops : sext + zext of loaded bytes/words */
+  /* byte sign/zero extension */
   acc = 0;
   for(int i = 0; i < 256; i++) {
     int8_t sb = bytes[i];
@@ -111,7 +116,7 @@ int main(void) {
   }
   print_hex("bytes", acc);
 
-  /* division-free integer idioms : umulh via __int128 */
+  /* umulh via __int128 */
   acc = 0;
   for(int i = 0; i < 64; i++) {
     unsigned __int128 p = (unsigned __int128)quads[i] * quads[(i + 1) & 63];
@@ -120,7 +125,7 @@ int main(void) {
   }
   print_hex("umulh", acc);
 
-  print("alpha test done\n", 16);
-  callsys3(1, 0, 0, 0); /* exit(0) */
+  htif_write("alpha cosim done\n", 17);
+  terminate(0);
   return 0;
 }

@@ -1,5 +1,6 @@
 
 #include "top.hh"
+#include "alpha_interp.hh"
 #include <queue>
 #include <signal.h>
 #include <setjmp.h>
@@ -11,6 +12,7 @@
 #define ROB_ENTRIES 64
 
 bool globals::syscall_emu = true;
+bool globals::is_alpha = false;
 uint32_t globals::tohost_addr = 0;
 uint32_t globals::fromhost_addr = 0;
 bool globals::log = false;
@@ -25,6 +27,7 @@ static uint64_t fetch_slots = 0;
 static bool trace_retirement = false;
 static uint64_t mem_reqs = 0;
 static state_t *ss = nullptr;
+static alpha_state_t *ssa = nullptr;
 static uint64_t insns_retired = 0, insns_allocated = 0;
 static uint64_t cycles_in_faulted = 0, fetch_stalls = 0, mispred_to_restart_cycles = 0;
 static uint64_t pipestart = 0, pipeend = ~(0UL), pipeip = 0, pipeipcnt = 0;
@@ -332,6 +335,10 @@ void wr_log(long long pc,
 	    int is_atomic) {
   if(not(enable_checker))
     return;
+  if(globals::is_alpha) {
+    /* alpha ISS does not feed the store queue yet */
+    return;
+  }
 
   
   if(globals::log) {
@@ -986,7 +993,8 @@ int main(int argc, char **argv) {
   uint32_t max_insns_per_cycle = 4;
   uint32_t max_insns_per_cycle_hist_sz = 2*max_insns_per_cycle;
   globals::log = trace_retirement;
-  use_checkpoint = not(is_rv64_elf(rv32_binary.c_str()));
+  globals::is_alpha = is_alpha_elf(rv32_binary.c_str());
+  use_checkpoint = not(globals::is_alpha or is_rv64_elf(rv32_binary.c_str()));
   retiretrace = retire_name.size() != -0;
 
   std::map<uint32_t, uint64_t> mispredicts;
@@ -1032,7 +1040,23 @@ int main(int argc, char **argv) {
   tb->syscall_emu = globals::syscall_emu;
 
   
-  if(use_checkpoint) {
+  if(globals::is_alpha) {
+    uint64_t entry = 0;
+    ssa = new alpha_state_t;
+    memset(ssa, 0, sizeof(*ssa));
+    ssa->mem = mmap4G();
+    if(not(load_alpha_elf(rv32_binary.c_str(), s->mem, entry) and
+	   load_alpha_elf(rv32_binary.c_str(), ssa->mem, entry))) {
+      std::cerr << "alpha elf load failed\n";
+      return -1;
+    }
+    s->pc = entry;
+    ssa->pc = entry;
+    ssa->cosim_driven = true;
+    ssa->tohost_addr = globals::tohost_addr;
+    ssa->fromhost_addr = globals::fromhost_addr;
+  }
+  else if(use_checkpoint) {
     loadState(*s, rv32_binary.c_str());
     loadState(*ss, rv32_binary.c_str());
   }
@@ -1046,7 +1070,9 @@ int main(int argc, char **argv) {
   if(not(pipelog.empty())) {
     pl = new pipeline_logger(pipelog);
   }
-  s->pc = ss->pc;
+  if(not(globals::is_alpha)) {
+    s->pc = ss->pc;
+  }
   signal(SIGINT, catchUnixSignal);
 
 
@@ -1294,7 +1320,37 @@ int main(int argc, char **argv) {
       }
        
       
-      if( enable_checker) {
+      if(enable_checker and globals::is_alpha) {
+	bool mismatch = (tb->retire_pc != ssa->pc);
+	if(mismatch) {
+	  std::cout << "alpha pc mismatch : rtl " << std::hex << tb->retire_pc
+		    << ", sim " << ssa->pc
+		    << ", last match " << last_match_pc << std::dec
+		    << " at icnt " << insns_retired << "\n";
+	  incorrect = true;
+	  break;
+	}
+	execAlpha(ssa);
+	bool adiverged = false;
+	if(ssa->pc == (tb->retire_pc + 4)) {
+	  for(int i = 0; i < 32; i++) {
+	    if(ssa->gpr[i] != s->gpr[i]) {
+	      std::cout << "alpha reg r" << i << " mismatch : rtl "
+			<< std::hex << s->gpr[i] << ", sim " << ssa->gpr[i]
+			<< " at pc " << tb->retire_pc << std::dec << "\n";
+	      adiverged = true;
+	    }
+	  }
+	}
+	if(adiverged) {
+	  incorrect = true;
+	  break;
+	}
+	++n_checks;
+	last_check = 0;
+	last_match_pc = tb->retire_pc;
+      }
+      else if( enable_checker) {
 	//printf("checking rtl %lx, sim %lx\n", tb->retire_pc, ss->pc);	
 	int cnt = 0;
 	bool mismatch = (tb->retire_pc != ss->pc), exception = false;
@@ -1482,7 +1538,21 @@ int main(int argc, char **argv) {
     
 
     if(enable_checker && tb->retire_two_valid) {
-      if(tb->retire_two_pc == ss->pc) {
+      if(globals::is_alpha) {
+	if(tb->retire_two_pc == ssa->pc) {
+	  execAlpha(ssa);
+	  ++n_checks;
+	  last_check = 0;
+	  last_match_pc = tb->retire_two_pc;
+	}
+	else {
+	  std::cout << "alpha pc mismatch (port b) : rtl " << std::hex
+		    << tb->retire_two_pc << ", sim " << ssa->pc << std::dec << "\n";
+	  incorrect = true;
+	  break;
+	}
+      }
+      else if(tb->retire_two_pc == ss->pc) {
 	execRiscv(ss);
 	++n_checks;
 	last_check = 0;
@@ -1649,7 +1719,7 @@ int main(int argc, char **argv) {
   t0 = timestamp() - t0;
 
   if(enable_checker) {
-    int mem_eq = memcmp(ss->mem, s->mem, 1UL<<32);
+    int mem_eq = memcmp(globals::is_alpha ? ssa->mem : ss->mem, s->mem, 1UL<<32);
     if(mem_eq == 0) {
       std::cout << "checker mem equal rtl mem\n";
     }

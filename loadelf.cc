@@ -79,6 +79,81 @@ bool is_rv64_elf(const char* fn) {
   return success;
 }
 
+bool is_alpha_elf(const char* fn) {
+  struct stat s;
+  int fd = open(fn, O_RDONLY);
+  if(fd < 0) {
+    return false;
+  }
+  fstat(fd, &s);
+  Elf64_Ehdr *eh = reinterpret_cast<Elf64_Ehdr*>(mmap(nullptr, s.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+  bool success = false;
+  if(checkElf(eh) && check64Bit(eh) && checkLittleEndian(eh)) {
+    /* 0x9026 is what binutils emits; 41 is the "official" value */
+    success = (eh->e_machine == 0x9026) || (eh->e_machine == 41);
+  }
+  munmap(reinterpret_cast<void*>(eh), s.st_size);
+  close(fd);
+  return success;
+}
+
+/* alpha : load segments and scan the symtab for tohost/fromhost.  no
+ * reset trampoline - execution starts at e_entry.  binaries must link
+ * below 4GB (-Wl,-Ttext-segment=0x20000000) to fit the flat image. */
+bool load_alpha_elf(const char* fn, uint8_t *mem, uint64_t &entry) {
+  struct stat st;
+  int fd = open(fn, O_RDONLY);
+  if(fd < 0) {
+    return false;
+  }
+  fstat(fd, &st);
+  char *buf = reinterpret_cast<char*>(mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+  const Elf64_Ehdr *eh = reinterpret_cast<const Elf64_Ehdr*>(buf);
+  const Elf64_Phdr *ph = reinterpret_cast<const Elf64_Phdr*>(buf + eh->e_phoff);
+  for(int i = 0; i < eh->e_phnum; i++) {
+    if(ph[i].p_type != PT_LOAD) {
+      continue;
+    }
+    if((ph[i].p_vaddr + ph[i].p_memsz) >= (1UL << 32)) {
+      printf("alpha segment at %lx beyond 4GB image - relink with -Ttext-segment\n",
+	     static_cast<uint64_t>(ph[i].p_vaddr));
+      munmap(buf, st.st_size);
+      close(fd);
+      return false;
+    }
+    memcpy(mem + ph[i].p_vaddr, buf + ph[i].p_offset, ph[i].p_filesz);
+  }
+  entry = eh->e_entry;
+
+  const Elf64_Shdr *sh = reinterpret_cast<const Elf64_Shdr*>(buf + eh->e_shoff);
+  int32_t strtabidx = 0, symtabidx = 0;
+  char *shstrtab = buf + sh[eh->e_shstrndx].sh_offset;
+  for(int32_t i = 0; i < eh->e_shnum; i++) {
+    if(sh[i].sh_type == SHT_SYMTAB) {
+      symtabidx = i;
+      strtabidx = sh[i].sh_link;
+    }
+  }
+  if(strtabidx && symtabidx) {
+    char *strtab = buf + sh[strtabidx].sh_offset;
+    const Elf64_Sym *sym = reinterpret_cast<const Elf64_Sym*>(buf + sh[symtabidx].sh_offset);
+    for(uint32_t i = 0; i < (sh[symtabidx].sh_size / sizeof(Elf64_Sym)); i++) {
+      globals::symtab[strtab + sym[i].st_name] = static_cast<uint32_t>(sym[i].st_value);
+    }
+  }
+  auto it0 = globals::symtab.find("tohost");
+  auto it1 = globals::symtab.find("fromhost");
+  if(it0 != globals::symtab.end()) {
+    globals::tohost_addr = it0->second;
+  }
+  if(it1 != globals::symtab.end()) {
+    globals::fromhost_addr = it1->second;
+  }
+  munmap(buf, st.st_size);
+  close(fd);
+  return true;
+}
+
 bool load_elf(const char* fn, state_t *ms) {
   struct stat s;
   Elf64_Ehdr *eh = nullptr;

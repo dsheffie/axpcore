@@ -123,10 +123,12 @@ module decode_alpha(
 	case(opc)
 	  6'h00: /* call_pal */
 	    begin
-	       if(syscall_emu && (insn[25:0] == 26'h83))
+	       if(syscall_emu && ((insn[25:0] == 26'h83) || (insn[25:0] == 26'hb0)))
 		 begin
-		    /* callsys -> host syscall proxy, same flow as the
-		     * rv64 MONITOR escape */
+		    /* 0xb0 is our htif escape : magic-mem args via
+		     * tohost, results written back to memory by the
+		     * harness - same flow as the rv64 MONITOR.  0x83
+		     * (callsys) also maps here for now. */
 		    uop.op = MONITOR;
 		    uop.serializing_op = 1'b1;
 		    uop.must_restart = 1'b1;

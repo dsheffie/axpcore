@@ -237,7 +237,11 @@ function logic [63:0] select_jal_simm(logic [L1I_CL_LEN_BITS-1:0] cl, logic[LG_W
      2'd3:
        w32 = cl[127:96];
    endcase // case (pos)
+`ifdef ALPHA
+   return {{(`M_WIDTH-23){w32[20]}}, w32[20:0], 2'd0} + 'd4;
+`else
    return {{(11+PP){w32[31]}}, w32[31], w32[19:12], w32[20], w32[30:21], 1'b0};
+`endif
 endfunction   
 
 function logic [63:0] select_br_simm(logic [L1I_CL_LEN_BITS-1:0] cl, logic[LG_WORDS_PER_CL-1:0] pos);
@@ -253,7 +257,11 @@ function logic [63:0] select_br_simm(logic [L1I_CL_LEN_BITS-1:0] cl, logic[LG_WO
      2'd3:
        w32 = cl[127:96];
    endcase // case (pos)
+`ifdef ALPHA
+   return {{(`M_WIDTH-23){w32[20]}}, w32[20:0], 2'd0} + 'd4;
+`else
    return {{(19+PP){w32[31]}}, w32[31], w32[7], w32[30:25], w32[11:8], 1'b0};
+`endif
 endfunction   
 
    
@@ -694,9 +702,15 @@ endfunction
 	t_first_pd = select_pd(w_jump, t_branch_idx);
 	
 		
+`ifdef ALPHA
+	t_jal_simm = {{(`M_WIDTH-23){t_insn_data[20]}}, t_insn_data[20:0], 2'd0} + 'd4;
+
+	t_br_simm = {{(`M_WIDTH-23){t_insn_data[20]}}, t_insn_data[20:0], 2'd0} + 'd4;
+`else
 	t_jal_simm = {{(11+PP){t_insn_data[31]}}, t_insn_data[31], t_insn_data[19:12], t_insn_data[20], t_insn_data[30:21], 1'b0};
 	
 	t_br_simm = {{(19+PP){t_insn_data[31]}}, t_insn_data[31], t_insn_data[7], t_insn_data[30:25], t_insn_data[11:8], 1'b0};
+`endif
 
 	t_br_disp = select_br_simm(w_array, t_branch_idx);
 	t_j_disp = select_jal_simm(w_array, t_branch_idx);

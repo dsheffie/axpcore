@@ -64,6 +64,28 @@ static bool load_alpha_elf(const char *fn, alpha_state_t *s) {
   }
   s->pc = eh->e_entry;
   s->brk_addr = (max_end + 8191UL) & ~8191UL;
+
+  /* htif symbols for call_pal 0xb0 binaries */
+  const Elf64_Shdr *sh = reinterpret_cast<const Elf64_Shdr*>(buf + eh->e_shoff);
+  int32_t strtabidx = 0, symtabidx = 0;
+  for(int32_t i = 0; i < eh->e_shnum; i++) {
+    if(sh[i].sh_type == SHT_SYMTAB) {
+      symtabidx = i;
+      strtabidx = sh[i].sh_link;
+    }
+  }
+  if(strtabidx && symtabidx) {
+    const char *strtab = reinterpret_cast<const char*>(buf + sh[strtabidx].sh_offset);
+    const Elf64_Sym *sym = reinterpret_cast<const Elf64_Sym*>(buf + sh[symtabidx].sh_offset);
+    for(uint32_t i = 0; i < (sh[symtabidx].sh_size / sizeof(Elf64_Sym)); i++) {
+      if(strcmp(strtab + sym[i].st_name, "tohost") == 0) {
+	s->tohost_addr = sym[i].st_value;
+      }
+      if(strcmp(strtab + sym[i].st_name, "fromhost") == 0) {
+	s->fromhost_addr = sym[i].st_value;
+      }
+    }
+  }
   munmap(buf, st.st_size);
   return true;
 }

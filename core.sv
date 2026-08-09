@@ -2337,6 +2337,41 @@ module core(clk,
     */
       
    
+`ifdef ALPHA
+   decode_alpha dec0
+     (
+      .insn(insn.insn_bytes),
+      .page_fault(insn.page_fault),
+      .bad_page_permissions(insn.bad_page_permissions),
+      .irq(w_any_irq),
+      .pc(insn.pc),
+      .insn_pred(insn.pred),
+      .bpu_idx(insn.bpu_idx),
+      .insn_pred_target(insn.pred_target),
+`ifdef ENABLE_CYCLE_ACCOUNTING
+      .fetch_cycle(insn.fetch_cycle),
+`endif
+      .syscall_emu(syscall_emu),
+      .uop(t_dec_uop)
+      );
+
+   decode_alpha dec1
+     (
+      .insn(insn_two.insn_bytes),
+      .page_fault(insn_two.page_fault),
+      .bad_page_permissions(insn_two.bad_page_permissions),
+      .irq(w_any_irq),
+      .pc(insn_two.pc),
+      .insn_pred(insn_two.pred),
+      .bpu_idx(insn_two.bpu_idx),
+      .insn_pred_target(insn_two.pred_target),
+`ifdef ENABLE_CYCLE_ACCOUNTING
+      .fetch_cycle(insn_two.fetch_cycle),
+`endif
+      .syscall_emu(syscall_emu),
+      .uop(t_dec_uop2)
+      );
+`else
    decode_riscv dec0 
      (
       .mode64(r_mode64),
@@ -2374,6 +2409,7 @@ module core(clk,
 	.syscall_emu(syscall_emu),	
 	.uop(t_dec_uop2)
 	);
+`endif // !`ifdef ALPHA
 
    /* cmov.eqz/cmov.nez read their own destination - crack into two
     * 2-source uops at dispatch.  the low uop tests rs1 and passes the

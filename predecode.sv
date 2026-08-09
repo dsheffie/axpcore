@@ -36,7 +36,45 @@ module predecode(pc, insn, pd);
 	rd_is_link = (rd == 'd1) || (rd == 'd5);
 	rs1_is_link = (rs1 == 'd1) || (rs1 == 'd5);
 	rd_eq_rs1 = (rd == rs1);
-	
+`ifdef ALPHA
+	/* alpha : class comes straight from the opcode and the jmp
+	 * hint field - no abi inference needed.  the pd taxonomy maps
+	 * 1:1 (see PORT.md). */
+	case(insn[31:26])
+	  6'h30, 6'h34: /* br / bsr */
+	    begin
+	       pd = (insn[25:21] == 5'd31) ? 'd3 /* j */ : 'd5 /* call */;
+	    end
+	  6'h38, 6'h39, 6'h3a, 6'h3b, 6'h3c, 6'h3d, 6'h3e, 6'h3f: /* cond branches */
+	    begin
+	       pd = 'd1;
+	    end
+	  6'h1a: /* jmp/jsr/ret/jsr_coroutine */
+	    begin
+	       case(insn[15:14])
+		 2'd0: /* jmp */
+		   begin
+		      pd = (insn[25:21] == 5'd31) ? 'd4 /* jr */ : 'd6 /* indirect call */;
+		   end
+		 2'd1: /* jsr */
+		   begin
+		      pd = (insn[25:21] == 5'd31) ? 'd4 : 'd6;
+		   end
+		 2'd2: /* ret */
+		   begin
+		      pd = (insn[25:21] == 5'd31) ? 'd2 /* return */ : 'd6;
+		   end
+		 2'd3: /* jsr_coroutine : pop then push */
+		   begin
+		      pd = 'd7;
+		   end
+	       endcase // case (insn[15:14])
+	    end
+	  default:
+	    begin
+	    end
+	endcase // case (insn[31:26])
+`else
 	case(opcode)
 	  7'h63: /* cond branches */
 	    begin
@@ -93,6 +131,7 @@ module predecode(pc, insn, pd);
 	    begin
 	    end
 	endcase // case (opcode)
+`endif
      end // always_comb
 
    

@@ -21,6 +21,9 @@ struct alpha_state_t {
   uint64_t lock_addr;
   uint64_t brk_addr; /* program break for the brk syscall */
   uint64_t mmap_addr; /* bump allocator for anonymous mmap */
+  uint64_t tohost_addr; /* htif magic-mem (call_pal 0xb0 convention) */
+  uint64_t fromhost_addr;
+  bool cosim_driven; /* checker mode : skip host i/o, arch effects only */
 
   /* minimal fp state : alpha has no integer divide - libgcc's __divqu
    * and friends do int division THROUGH the fpu, so running any

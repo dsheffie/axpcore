@@ -108,21 +108,56 @@ qemu-alpha ./alpha_test > a.txt ; ./alpha_iss -f alpha_test > b.txt ; diff a.txt
 - gotcha : don't build tb_decode_alpha into obj_dir (the main Makefile
   globs obj_dir/*.o) - use -Mdir tb_obj
 
-## next : the switchover (first alpha co-sim)
+## THE SWITCHOVER IS DONE : alpha RTL runs compiled code in co-sim
 
-1. fetch/predecode : sext21<<2 displacement extraction in l1i_2way,
-   predecode from opcode + jmp hint bits (pd taxonomy maps 1:1)
-2. core.sv : instantiate decode_alpha instead of decode_riscv; define
-   `ALPHA; delete div/AMO paths at this point
-3. harness : loadelf EM_ALPHA + alpha reset path, top.cc checker
-   drives execAlpha (retire-compare loop is reusable), hand-rolled
-   disassembler (capstone has no alpha backend)
-4. keep widening ISS csmith coverage (more seeds, -O0/-Os, ev4-only /
-   ev56 variants); directed stw/ldl_l/stl_c tests
-5. call_pal rduniq/wruniq (0x9e/0x9f) currently II - needed for TLS
-   (static glibc errno) when the RTL runs glibc binaries
-6. deferred : privilege model decision (PALcode vs retargeted hardware
-   walker) - only after user-mode co-sim is clean
+`make` with `` `define ALPHA `` (machine.vh, now on) builds the alpha
+core.  first co-sim milestone: `./rv64_core -f alpha_cosim_test` runs
+42302 instructions in lockstep with execAlpha - all four checksums
+identical to the ISS/qemu reference, **zero checker mismatches,
+final 4GB memory-image compare clean**.
+
+what the switchover added:
+- l1i_2way : branch/jal displacement = sext21<<2 (+4 folded), behind
+  `ALPHA; predecode.sv alpha variant classifies from opcode + jmp
+  hint bits (pd taxonomy 1:1, no abi inference)
+- core.sv : decode_alpha instantiated under `ALPHA
+- harness : is_alpha_elf/load_alpha_elf (segments + tohost symtab
+  scan, no trampoline, entry direct; binaries must link
+  -Wl,-Ttext-segment=0x20000000 to fit the 4GB flat image), top.cc
+  alpha checker branch (pc + 32-gpr lockstep vs execAlpha, port a+b),
+  wr_log store-compare bypassed for now
+- co-sim syscall convention : call_pal 0xb0 -> MONITOR; magic-mem
+  htif block + tohost, results via memory (the existing ISA-neutral
+  handle_syscall in syscall.cc serves it untouched).  ISS implements
+  0xb0 with deterministic arch effects (cosim_driven skips host i/o)
+- alpha_start.S sets its own gp/sp (stack_end symbol from the C file)
+  so the same binary runs on bare RTL, alpha_iss, and qemu
+- bug found by first light : the AND/OR/XOR-family arms had not been
+  retrofitted to w_opB (literal forms read garbage) - the checker
+  caught it at the first literal AND, 2228 instructions in
+
+## regressions
+
+- rv64 : comment out `` `define ALPHA `` in machine.vh and rebuild;
+  cmov_test + csmith test-0 were green at the switchover commit
+- alpha : ./rv64_core -f alpha_cosim_test (checker on by default)
+- 0x83-convention binaries (alpha_test, csmith/glibc) are for
+  ISS-vs-qemu only - on RTL the callsys registers are invisible to
+  the monitor path
+
+## next
+
+1. IPC is low (0.147) on alpha_cosim_test - profile where the stalls
+   come from (predictor training? crack serialization? pipe0-only ops?)
+2. wire the alpha ISS into the store queue so wr_log store compare
+   works; directed ldl_l/stl_c + stq_u co-sim tests
+3. bigger co-sim runs : csmith with a freestanding print shim (glibc
+   needs fp-divide + rduniq), or teach the ISS+RTL the fp-divide
+   subset
+4. delete the riscv paths (decode_riscv, div, AMO, CSR file) once
+   comfortable; hand-rolled disassembler for reports
+5. call_pal rduniq/wruniq for TLS; then the privilege model decision
+   (PALcode vs retargeted walker)
 
 ## conventions
 

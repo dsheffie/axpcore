@@ -309,8 +309,11 @@ the plan for the mips FPU port.
 
 ## next
 
-1. sweep stage 3 : the CSR/priv block (couples to the privilege-model
-   decision - PALcode vs hardware), interpret.cc riscv paths
+1. PALcode : see PALCODE.md (step-by-step guide distilled from the
+   in-repo DEC system design guide; EV4 entry map + gas -m21064
+   hw_* encodings + OSF personality first).  sweep stage 3 (the CSR
+   block) is absorbed into its phase 3 - the CSR machinery's shape
+   becomes the IPR file
 2. cheaper monitor path (skip the L2 walk for syscalls?)
 3. r9999 also has formal_l1d_fwd - port when the l1d gets attention
 2. wire the alpha ISS into the store queue so wr_log store compare

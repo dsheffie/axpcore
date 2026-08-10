@@ -8,10 +8,6 @@
 
 `define FPGA 1
 
-/* alpha-semantics bits in shared blocks (stx_c success polarity in
- * nu_l1d).  the full ISA switchover turns this on. */
-`define ALPHA 1
-
 `define SECOND_EXEC_PORT 1
 `define TWO_SRC_CHEAP 1
 

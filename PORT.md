@@ -165,10 +165,60 @@ conclusion : the 0.147 IPC on alpha_cosim_test was entirely the
 serializing cache-flush in the MONITOR path (each htif print walks
 all of L2).  the core itself is healthy.
 
+## csmith-on-RTL fuzzing (LIVE BUG UNDER INVESTIGATION)
+
+pipeline : csmith -> host gcc run (checksum oracle) -> alpha_iss
+(golden) -> rv64_core co-sim (checker on).  needs the freestanding
+shim (shim/ : mini printf/string/assert + htif crt) and the
+**integer division helpers in the alpha division ABI**
+(shim/alpha_div.S : dividend $24, divisor $25, result $27, ra $23 -
+libgcc's versions use the FPU).  `./csmith_rtl.sh N seed0`.
+
+**first 30-seed batch : 19 pass, 8 fail, 0 iss-vs-host fails.**
+every failure is deterministic and sits in csmith's crc32 kernel.
+
+### the open bug - status of the hunt
+
+symptom (seed 2016, `csmith_alpha_rtl/rtlfail_2016.c`) : `extbl
+a0,0x6,t3` retires 0x2e (RETIRE DATA PROVES THE EXEC RESULT AND PRF
+WRITE VALUE WERE CORRECT).  19 cycles later - no flush between - `xor
+t0,t3,t3` reads that phys reg as 0 (rtl result == t0 exactly).
+
+exonerated by experiment :
+- alpha_zapper unit (tb_zapper : 98k vectors vs C model, clean)
+- the cmov crack (`-fno-if-conversion` build still fails)
+- dual-issue (SECOND_EXEC_PORT off still fails -> shared path)
+- stores (alpha ISS now feeds the wr_log store queue : every
+  committed store matches (pc,addr,data) up to the divergence)
+- the crc kernel in isolation co-sims clean (crc_repro) ; a
+  store-after-mispredicted-loop micro test is clean too - the bug
+  needs the fuller csmith context (deep dependent chains + loads +
+  mispredict pressure)
+
+next moves :
+1. add FST wave dumping to top.cc (cycle-windowed), capture the
+   19-cycle window around the f2016 divergence (cycle ~82726-82745),
+   read the rf6r3w ports + forwarding selects for the consumer
+2. suspects still standing : a wrong-path uop's PRF write landing
+   after recovery reallocation, scheduler operand capture vs
+   writeback race on pipe0, load-forwarding false hit
+3. `creduce` caution : the loose "any mismatch" predicate drifted the
+   reduction into UB (wild >4GB loads = a DIFFERENT divergence).
+   pin the predicate to the original pc/symptom next time
+
+### side findings
+- TWO_SRC_CHEAP off wedges the alpha build (decode cheap-marking
+  assumes it) ; PERFECT_L1_CACHES doesn't compile with alpha changes.
+  both noted, neither blocking
+- checker strengthened : every-retire 32-gpr compare on BOTH ports
+  (was port-a + pc+4-only) ; rpcc divergence accepted via did_rpcc
+  (perf binaries co-sim checked now) ; end-of-run memdiff dump (first
+  16 differing qwords - beware post-abort artifacts)
+
 ## next
 
-1. checker acceptance for RDCYCLE-class divergence so perf binaries
-   can co-sim; cheaper monitor path (skip the L2 flush for syscalls?)
+1. FST wave window -> root-cause the phys-reg-reads-0 bug
+2. cheaper monitor path (skip the L2 walk for syscalls?)
 2. wire the alpha ISS into the store queue so wr_log store compare
    works; directed ldl_l/stl_c + stq_u co-sim tests
 3. bigger co-sim runs : csmith with a freestanding print shim (glibc

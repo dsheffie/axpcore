@@ -24,6 +24,9 @@ struct alpha_state_t {
   uint64_t tohost_addr; /* htif magic-mem (call_pal 0xb0 convention) */
   uint64_t fromhost_addr;
   bool cosim_driven; /* checker mode : skip host i/o, arch effects only */
+  bool did_rpcc; /* last insn read the cycle counter - checker accepts the RTL value */
+  /* co-sim store log hook : null when standalone */
+  void (*log_store)(uint64_t pc, uint64_t addr, uint64_t data);
 
   /* minimal fp state : alpha has no integer divide - libgcc's __divqu
    * and friends do int division THROUGH the fpu, so running any

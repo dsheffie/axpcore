@@ -223,6 +223,7 @@ void execAlpha(alpha_state_t *s) {
   uint64_t npc = pc + 4;
   m.raw = s->load32(pc);
   s->last_pc = pc;
+  s->did_rpcc = false;
   uint32_t opcode = m.raw >> 26;
 
   if(g_trace) {
@@ -274,12 +275,21 @@ void execAlpha(alpha_state_t *s) {
       s->gpr[m.m.ra] = s->load16(s->gpr[m.m.rb] + sext16(m.m.disp));
       break;
     case 0x0d: /* stw (BWX) */
+      if(s->log_store) {
+	s->log_store(pc, s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
+      }
       s->store16(s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
       break;
     case 0x0e: /* stb (BWX) */
+      if(s->log_store) {
+	s->log_store(pc, s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
+      }
       s->store8(s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
       break;
     case 0x0f: /* stq_u */
+      if(s->log_store) {
+	s->log_store(pc, (s->gpr[m.m.rb] + sext16(m.m.disp)) & ~7UL, s->gpr[m.m.ra]);
+      }
       s->store64((s->gpr[m.m.rb] + sext16(m.m.disp)) & ~7UL, s->gpr[m.m.ra]);
       break;
 
@@ -714,6 +724,7 @@ void execAlpha(alpha_state_t *s) {
 	  break;
 	case 0xc000: /* rpcc */
 	  s->gpr[m.m.ra] = s->icnt;
+	  s->did_rpcc = true;
 	  break;
 	case 0xe000: /* rc */
 	case 0xf000: /* rs */
@@ -777,9 +788,15 @@ void execAlpha(alpha_state_t *s) {
       break;
     }
     case 0x2c: /* stl */
+      if(s->log_store) {
+	s->log_store(pc, s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
+      }
       s->store32(s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
       break;
     case 0x2d: /* stq */
+      if(s->log_store) {
+	s->log_store(pc, s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
+      }
       s->store64(s->gpr[m.m.rb] + sext16(m.m.disp), s->gpr[m.m.ra]);
       break;
     case 0x2e: /* stl_c : single-threaded, succeeds iff lock still held */

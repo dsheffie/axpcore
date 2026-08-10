@@ -12,3 +12,4 @@ rv64_core
 *-log.txt
 *-tip.txt
 *-branch_info.txt
+csmith_alpha_rtl/

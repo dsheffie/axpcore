@@ -335,10 +335,7 @@ void wr_log(long long pc,
 	    int is_atomic) {
   if(not(enable_checker))
     return;
-  if(globals::is_alpha) {
-    /* alpha ISS does not feed the store queue yet */
-    return;
-  }
+
 
   
   if(globals::log) {
@@ -1055,6 +1052,9 @@ int main(int argc, char **argv) {
     ssa->cosim_driven = true;
     ssa->tohost_addr = globals::tohost_addr;
     ssa->fromhost_addr = globals::fromhost_addr;
+    ssa->log_store = [](uint64_t pc, uint64_t addr, uint64_t data) {
+      store_queue.emplace_back(pc, addr, data);
+    };
   }
   else if(use_checkpoint) {
     loadState(*s, rv32_binary.c_str());
@@ -1332,9 +1332,15 @@ int main(int argc, char **argv) {
 	}
 	execAlpha(ssa);
 	bool adiverged = false;
-	if(ssa->pc == (tb->retire_pc + 4)) {
+	{
 	  for(int i = 0; i < 32; i++) {
 	    if(ssa->gpr[i] != s->gpr[i]) {
+	      if(ssa->did_rpcc) {
+		/* cycle counter legitimately differs (cycles vs icnt) -
+		 * adopt the RTL value */
+		ssa->gpr[i] = s->gpr[i];
+		continue;
+	      }
 	      std::cout << "alpha reg r" << i << " mismatch : rtl "
 			<< std::hex << s->gpr[i] << ", sim " << ssa->gpr[i]
 			<< " at pc " << tb->retire_pc << std::dec << "\n";
@@ -1541,6 +1547,23 @@ int main(int argc, char **argv) {
       if(globals::is_alpha) {
 	if(tb->retire_two_pc == ssa->pc) {
 	  execAlpha(ssa);
+	  bool bdiverged = false;
+	  for(int i = 0; i < 32; i++) {
+	    if(ssa->gpr[i] != s->gpr[i]) {
+	      if(ssa->did_rpcc) {
+		ssa->gpr[i] = s->gpr[i];
+		continue;
+	      }
+	      std::cout << "alpha reg r" << i << " mismatch (port b) : rtl "
+			<< std::hex << s->gpr[i] << ", sim " << ssa->gpr[i]
+			<< " at pc " << tb->retire_two_pc << std::dec << "\n";
+	      bdiverged = true;
+	    }
+	  }
+	  if(bdiverged) {
+	    incorrect = true;
+	    break;
+	  }
 	  ++n_checks;
 	  last_check = 0;
 	  last_match_pc = tb->retire_two_pc;
@@ -1720,6 +1743,17 @@ int main(int argc, char **argv) {
 
   if(enable_checker) {
     int mem_eq = memcmp(globals::is_alpha ? ssa->mem : ss->mem, s->mem, 1UL<<32);
+    if(mem_eq != 0 and globals::is_alpha) {
+      uint64_t *a = reinterpret_cast<uint64_t*>(ssa->mem);
+      uint64_t *b = reinterpret_cast<uint64_t*>(s->mem);
+      int shown = 0;
+      for(uint64_t i = 0; (i < (1UL<<29)) and (shown < 16); i++) {
+	if(a[i] != b[i]) {
+	  printf("memdiff %lx : sim %lx rtl %lx\n", i*8, a[i], b[i]);
+	  shown++;
+	}
+      }
+    }
     if(mem_eq == 0) {
       std::cout << "checker mem equal rtl mem\n";
     }

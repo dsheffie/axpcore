@@ -68,8 +68,7 @@
 
 `define MUL_LAT 3
 
-`define DIV64_LAT 66
-`define MAX_LAT (`DIV64_LAT)
+`define MAX_LAT (`MUL_LAT+3)
 
 
 // l1 cacheline length (in bytes)
@@ -114,8 +113,6 @@ typedef enum logic [4:0] {
    MEM_LWU = 'd11,
    MEM_LD  = 'd12,
    MEM_SD  = 'd13,
-   MEM_AMOW = 'd14,
-   MEM_AMOD = 'd15,
    MEM_PREFETCH = 'd16			  			  
 } mem_op_t;
 

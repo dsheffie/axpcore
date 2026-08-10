@@ -244,9 +244,6 @@ module exec(clk,
    wire [`LG_PRF_ENTRIES-1:0] w_mul_prf_ptr;
    logic [`LG_PRF_ENTRIES-1:0] r_mul_prf_ptr;
    logic 		       r_mul_complete;
-   wire [`LG_PRF_ENTRIES-1:0] w_div_prf_ptr;
-   logic [`LG_PRF_ENTRIES-1:0] r_div_prf_ptr;
-   logic 		       r_div_complete;
 
    wire			       w_pop_uq, w_pop_uq2;
    wire			       w_alloc_uq, w_alloc_uq2,w_uq_swizzle;   
@@ -380,7 +377,6 @@ module exec(clk,
    wire [63:0] w_shifter_out;
 
    logic	       t_start_mul,t_is_mulw,t_signed_mul;
-   logic	       t_is_fp_add, t_is_fp_sub, t_is_fp_mul;
    
    logic	       t_is_clzw_ctzw_cpopw;
    
@@ -393,11 +389,6 @@ module exec(clk,
    
    logic [`MAX_LAT:0] r_wb_bitvec, n_wb_bitvec;
 
-   /* divider */
-   logic 	t_div_ready, t_signed_div, t_is_rem, t_start_div32, t_start_div64;
-   logic [`LG_ROB_ENTRIES-1:0] t_div_rob_ptr;
-   logic [63:0]		       t_div_result;
-   logic		       t_div_complete;
 
    logic [N_ROB_ENTRIES-1:0] 	    r_uq_wait, r_mq_wait;
    /* non mem uop queue */
@@ -864,8 +855,6 @@ module exec(clk,
 	     n_wb_bitvec[i] = r_wb_bitvec[i+1];	     
 	  end
 	
-	n_wb_bitvec[`DIV64_LAT] = t_start_div64&r_start_int;
-	
 	if(t_start_mul&r_start_int)
 	  begin
 	     n_wb_bitvec[`MUL_LAT] = 1'b1;
@@ -1177,21 +1166,18 @@ module exec(clk,
 		t_alu_srcA_match[i] = r_alu_sched_uops[i].srcA_valid & (
 									 (mem_rsp_dst_valid & (mem_rsp_dst_ptr == r_alu_sched_uops[i].srcA)) |
 									 (t_mul_complete & (w_mul_prf_ptr == r_alu_sched_uops[i].srcA)) |
-									 (r_div_complete & (r_div_prf_ptr == r_alu_sched_uops[i].srcA)) |
 									 (r_start_int2 & t_wr_int_prf2 & (int_uop2.dst == r_alu_sched_uops[i].srcA)) |			 
 									 (r_start_int & t_wr_int_prf & (int_uop.dst == r_alu_sched_uops[i].srcA))
 									 );
 		t_alu_srcB_match[i] = r_alu_sched_uops[i].srcB_valid & (
 									 (mem_rsp_dst_valid & (mem_rsp_dst_ptr == r_alu_sched_uops[i].srcB)) |
 									 (t_mul_complete & (w_mul_prf_ptr == r_alu_sched_uops[i].srcB)) |
-									 (r_div_complete & (r_div_prf_ptr == r_alu_sched_uops[i].srcB)) |
 									 (r_start_int2 & t_wr_int_prf2 & (int_uop2.dst == r_alu_sched_uops[i].srcB)) |
 									 (r_start_int & t_wr_int_prf & (int_uop.dst == r_alu_sched_uops[i].srcB))
 									 );
 		
 		t_alu_entry_rdy[i] = r_alu_sched_valid[i] &&
-				     (uses_div(r_alu_sched_uops[i].op) ?  t_div_ready :  
-				      (uses_mul(r_alu_sched_uops[i].op) ?  !r_wb_bitvec[`MUL_LAT+2] : !r_wb_bitvec[1]))
+				     (uses_mul(r_alu_sched_uops[i].op) ?  !r_wb_bitvec[`MUL_LAT+2] : !r_wb_bitvec[1])
 				     ? (
 					(t_alu_srcA_match[i] |r_alu_srcA_rdy[i]) & 
 					(t_alu_srcB_match[i] |r_alu_srcB_rdy[i]) 
@@ -1237,7 +1223,6 @@ module exec(clk,
 		t_alu_srcA_match2[i] = r_alu_sched_uops2[i].srcA_valid && (
 									   (mem_rsp_dst_valid & (mem_rsp_dst_ptr == r_alu_sched_uops2[i].srcA)) ||
 									   (t_mul_complete && (w_mul_prf_ptr == r_alu_sched_uops2[i].srcA)) ||
-									   (r_div_complete && (r_div_prf_ptr == r_alu_sched_uops2[i].srcA)) ||
 									   (r_start_int2 && t_wr_int_prf2 & (int_uop2.dst == r_alu_sched_uops2[i].srcA)) ||			 
 									   (r_start_int && t_wr_int_prf & (int_uop.dst == r_alu_sched_uops2[i].srcA))
 									   );
@@ -1245,7 +1230,6 @@ module exec(clk,
 		t_alu_srcB_match2[i] = r_alu_sched_uops2[i].srcB_valid && (
 									   (mem_rsp_dst_valid & (mem_rsp_dst_ptr == r_alu_sched_uops2[i].srcB)) ||
 									   (t_mul_complete && (w_mul_prf_ptr == r_alu_sched_uops2[i].srcB)) ||
-									   (r_div_complete && (r_div_prf_ptr == r_alu_sched_uops2[i].srcB)) ||
 									   (r_start_int2 && t_wr_int_prf2 & (int_uop2.dst == r_alu_sched_uops2[i].srcB)) ||
 									   (r_start_int && t_wr_int_prf & (int_uop.dst == r_alu_sched_uops2[i].srcB))
 									   );
@@ -2024,43 +2008,8 @@ module exec(clk,
       .distance(t_shift_amt), 
       .y(w_shifter_out));
 
-   wire [31:0] w_int_to_fp, w_fp_to_int;
-   logic       t_fp_convert_signed;
-   
-   fp_convert #(.W(32)) int32_to_fp32
-     (.in(t_srcA[31:0]),
-      .is_signed(t_fp_convert_signed),
-      .out(w_int_to_fp)
-     );
-
-   fp_trunc #(.W(32)) fp32_to_int32
-     (.in(t_srcA[31:0]),
-      .out(w_fp_to_int)
-      );
-
-   wire	       w_fp32_ueq, w_fp32_une, w_fp32_ugt, w_fp32_ult;
-   wire	       w_fp32_oeq, w_fp32_one, w_fp32_ogt, w_fp32_olt;   
-   fp_compare #(.W(32)) fp32_compare
-     (
-      .a(t_srcA[31:0]),
-      .b(t_srcB[31:0]),
-      .ueq(w_fp32_ueq),
-      .une(w_fp32_une),
-      .ugt(w_fp32_ugt),
-      .ult(w_fp32_ult),
-      .oeq(w_fp32_oeq),
-      .one(w_fp32_one),
-      .ogt(w_fp32_ogt),
-      .olt(w_fp32_olt)     
-      );
-   
-   // always_ff@(negedge clk)
-   //   begin
-   // 	if(int_uop.op == INT_TO_SP & t_alu_valid)
    // 	  begin
-   // 	     $display("input %x, w_int_to_fp = %x",
    // 		      t_srcA[31:0],
-   // 		      w_int_to_fp);
    // 	  end
    //   end
    
@@ -2068,9 +2017,7 @@ module exec(clk,
    always_ff@(posedge clk)
      begin
 	r_mul_prf_ptr <= w_mul_prf_ptr;
-	r_div_prf_ptr <= w_div_prf_ptr;
 	r_mul_complete <= reset ? 1'b0 : t_mul_complete;
-	r_div_complete <= reset ? 1'b0 : t_div_complete;
      end
 
 
@@ -2087,12 +2034,9 @@ module exec(clk,
       .clk(clk), 
       .reset(reset), 
       .is_signed(t_signed_mul),
-      .is_high(int_uop.op == MULHU || int_uop.op == MULH),
+      .is_high(int_uop.op == MULHU),
       .go(t_start_mul&r_start_int),
       .is_mulw(t_is_mulw),
-      .is_fp_add(t_is_fp_add),
-      .is_fp_sub(t_is_fp_sub),
-      .is_fp_mul(t_is_fp_mul),
       .src_A(t_srcA),
       .src_B(w_opB),
       .rob_ptr_in(int_uop.rob_ptr),
@@ -2107,55 +2051,14 @@ module exec(clk,
 `ifdef VERILATOR   
    always_ff@(negedge clk)
      begin
-	if(t_mul_complete & t_div_complete)
-	  begin
-	     $stop();
-	  end
-	
 	if(t_mul_complete & r_start_int & t_wr_int_prf)
 	  $stop();
-
-	if(t_div_complete & r_start_int & t_wr_int_prf)
-	  begin
-	     $display("divide completes but pc %x started at cycle %d", 
-		      int_uop.pc, r_cycle);
-	     $stop();
-	  end
      end
 `endif
    
 	       
-   //t_zero_shift_upper
-   wire [63:0] w_divA = t_zero_shift_upper ? 
-	       {{32{(t_signed_div ? t_srcA[31] : 1'b0)}}, t_srcA[31:0]} : 
-	       t_srcA;
-
-   wire [63:0] w_divB = t_zero_shift_upper ? 
-	       {{32{(t_signed_div ? t_srcB[31] : 1'b0)}}, t_srcB[31:0]} : 
-	       t_srcB;
-	       
-   nu_divider #(.LG_W(6))
-   d64 (
-	.clk(clk), 
-	.reset(reset),
-	.flush(ds_done),
-	.wb_slot_used(r_start_int |  t_mul_complete),
-	.inA(w_divA),
-	.inB(w_divB),
-	.rob_ptr_in(int_uop.rob_ptr),
-	.prf_ptr_in(int_uop.dst),
-	.is_signed_div(t_signed_div),
-	.is_w(t_zero_shift_upper),
-        .is_rem(t_is_rem),
-	.start_div(t_start_div64),
-	.y(t_div_result),
-	.rob_ptr_out(t_div_rob_ptr),
-	.prf_ptr_out(w_div_prf_ptr),
-	.complete(t_div_complete),
-	.ready(t_div_ready)
-	);
+   assign divide_ready = 1'b1;
    
-   assign divide_ready = t_div_ready;
    mem_req_t r_mem_req,n_mem_req;
    logic [1:0] n_mem_st, r_mem_st;
    always_ff@(posedge clk)
@@ -2279,10 +2182,6 @@ module exec(clk,
 	       begin
 		  r_prf_inflight[w_mul_prf_ptr] <= 1'b0;
 	       end
-	     else if(t_div_complete)
-	       begin
-		  r_prf_inflight[w_div_prf_ptr] <= 1'b0;
-	       end
 	     if(r_start_int2 && t_wr_int_prf2)
 	       begin
 		  r_prf_inflight[int_uop2.dst] <= 1'b0;
@@ -2378,7 +2277,6 @@ module exec(clk,
       
    always_comb
      begin
-	t_fp_convert_signed = 1'b0;	
 	t_call = 1'b0;
 	t_is_clzw_ctzw_cpopw = 1'b0;
 	t_sub = 1'b0;
@@ -2406,143 +2304,21 @@ module exec(clk,
 	t_signed_mul = 1'b0;
 	t_is_mulw = 1'b0;
 	
-	t_is_fp_add = 1'b0;
-	t_is_fp_sub = 1'b0;
-	t_is_fp_mul = 1'b0;
-	
-	
-	
-	t_signed_div = 1'b0;
-	t_is_rem = 1'b0;
-	t_start_div32 = 1'b0;
-	t_start_div64 = 1'b0;	
 	t_zero_shift_upper = 1'b0;
 	t_dup_shift_upper = 1'b0;
 	
 	case(int_uop.op)
 	  //riscv
-	  DIV:
-	    begin
-	       t_signed_div = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;	       
-	    end
-	  DIVW:
-	    begin
-	       t_signed_div = 1'b1;
-	       t_zero_shift_upper = 1'b1;	       
-	       t_start_div64 = r_start_int&!ds_done;	       
-	    end
-	  DIVU:
-	    begin
-	       t_start_div64 = r_start_int&!ds_done;
-	    end
-	  DIVUW:
-	    begin
-	       t_zero_shift_upper = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;
-	    end
-	  REM:
-	    begin
-	       t_signed_div = 1'b1;
-	       t_is_rem = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;	       
-	    end
-	  REMU:
-	    begin
-	       t_is_rem = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;
-	    end
-	  REMW:
-	    begin
-	       t_zero_shift_upper = 1'b1;	       
-	       t_signed_div = 1'b1;
-	       t_is_rem = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;	       
-	    end
-	  REMUW:
-	    begin
-	       t_zero_shift_upper = 1'b1;
-	       t_is_rem = 1'b1;
-	       t_start_div64 = r_start_int&!ds_done;
-	    end
 	  MUL:
 	    begin
 	       t_signed_mul = 1'b1;	       	       
 	       t_start_mul = r_start_int&!ds_done;
 	    end
-	  SP_ADD:
-	    begin
-	       t_is_fp_add = 1'b1;
-	       t_start_mul = r_start_int&!ds_done;
-	    end
-	  SP_SUB:
-	    begin
-	       t_is_fp_sub = 1'b1;
-	       t_start_mul = r_start_int&!ds_done;
-	    end
-	  SP_MUL:
-	    begin
-	       t_is_fp_mul = 1'b1;
-	       t_start_mul = r_start_int&!ds_done;
-	    end
-	  SP_CMP_OLT:
-	    begin
-	       t_result = {63'd0, w_fp32_olt};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       	       
-	    end
-	  SP_CMP_OGT:
-	    begin
-	       t_result = {63'd0, w_fp32_ogt};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       
-	    end	  
-	  SP_CMP_OEQ:
-	    begin
-	       t_result = {63'd0, w_fp32_oeq};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       
-	    end
-	  SP_CMP_ONE:
-	    begin
-	       t_result = {63'd0, w_fp32_one};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       
-	    end	  
-	  SP_CMP_ULT:
-	    begin
-	       t_result = {63'd0, w_fp32_ult};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       	       
-	    end
-	  SP_CMP_UGT:
-	    begin
-	       t_result = {63'd0, w_fp32_ugt};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       
-	    end	  
-	  SP_CMP_UEQ:
-	    begin
-	       t_result = {63'd0, w_fp32_ueq};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       	       
-	    end
-	  SP_CMP_UNE:
-	    begin
-	       t_result = {63'd0, w_fp32_une};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       	       
-	    end	  
 	  MULW:
 	    begin
 	       t_is_mulw = 1'b1;	       
 	       t_signed_mul = 1'b1;	       
 	       t_start_mul = r_start_int&!ds_done;	       
-	    end
-	  MULH:
-	    begin
-	       t_signed_mul = 1'b1;
-	       t_start_mul = r_start_int&!ds_done;
 	    end
 	  MULHU:
 	    begin
@@ -2567,25 +2343,6 @@ module exec(clk,
 	       t_result = w_as64;	       
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
-	    end
-	  INT_TO_SP:
-	    begin
-	       t_result = {32'd0, w_int_to_fp};
-	       t_fp_convert_signed = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       
-	    end
-	  UINT_TO_SP:
-	    begin
-	       t_result = {32'd0, w_int_to_fp};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       
-	    end	  
-	  SP_TO_INT:
-	    begin
-	       t_result = {{32{(w_fp_to_int[31])}}, w_fp_to_int};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       
 	    end
 	  SH1ADD:
 	    begin
@@ -4066,7 +3823,6 @@ module exec(clk,
 		t_mem_srcA_match[i] = (
 				       (mem_rsp_dst_valid & (mem_rsp_dst_ptr == r_mem_sched_uops[i].srcA)) |
 				       (t_mul_complete & (w_mul_prf_ptr == r_mem_sched_uops[i].srcA)) |
-				       (r_div_complete & (r_div_prf_ptr == r_mem_sched_uops[i].srcA)) |
 				       (r_start_int2 & t_wr_int_prf2 & (int_uop2.dst == r_mem_sched_uops[i].srcA)) |			 
 				       (r_start_int & t_wr_int_prf & (int_uop.dst == r_mem_sched_uops[i].srcA))
 				       );		
@@ -4261,7 +4017,6 @@ module exec(clk,
 	t_mem_tail.is_load = 1'b0;
 	t_mem_tail.is_store = 1'b0;
 	t_mem_tail.is_atomic = 1'b0;
-	t_mem_tail.amo_op = mem_uop.jmp_imm[4:0];
 	t_mem_tail.data = 'd0;
 	t_mem_tail.spans_cacheline = 1'b0;
 	t_mem_tail.unaligned = 1'b0;
@@ -4333,24 +4088,6 @@ module exec(clk,
 	  SCD:
 	    begin
 	       t_mem_tail.op = MEM_SCD;
-	       t_mem_tail.is_atomic = 1'b1;
-	       t_mem_tail.dst_valid = mem_uop.dst_valid;
-	       t_mem_tail.dst_ptr = mem_uop.dst;
-	       t_mem_tail.spans_cacheline = (w_agu_addr[2:0] != 3'd0);
-	       t_mem_tail.unaligned = |w_agu_addr[2:0];
-	    end // case: SW
-	  AMOW:
-	    begin
-	       t_mem_tail.op = MEM_AMOW;
-	       t_mem_tail.is_atomic = 1'b1;	       
-	       t_mem_tail.dst_valid = mem_uop.dst_valid;
-	       t_mem_tail.dst_ptr = mem_uop.dst;
-	       t_mem_tail.spans_cacheline = (w_agu_addr[1:0] != 2'd0);
-	       t_mem_tail.unaligned = |w_agu_addr[1:0];
-	    end // case: SW
-	 AMOD:
-	    begin
-	       t_mem_tail.op = MEM_AMOD;
 	       t_mem_tail.is_atomic = 1'b1;
 	       t_mem_tail.dst_valid = mem_uop.dst_valid;
 	       t_mem_tail.dst_ptr = mem_uop.dst;
@@ -4503,15 +4240,13 @@ module exec(clk,
 	   .rdptr4(t_picked_uop2.srcA),
 	   .rdptr5(t_picked_uop2.srcB),
 	   .wrptr0(t_mul_complete ? w_mul_prf_ptr :
-		   t_div_complete ? w_div_prf_ptr :
 		   int_uop.dst),
 	   .wrptr1(mem_rsp_dst_ptr),
 	   .wrptr2(int_uop2.dst),
-	   .wen0(t_mul_complete | t_div_complete | (r_start_int & t_wr_int_prf)),
+	   .wen0(t_mul_complete | (r_start_int & t_wr_int_prf)),
 	   .wen1(mem_rsp_dst_valid),
 	   .wen2(r_start_int2 & t_wr_int_prf2),
 	   .wr0(t_mul_complete ? t_mul_result :
-		t_div_complete ? t_div_result :
 		t_result),
 	   .wr1(mem_rsp_load_data),
 	   .wr2(t_result2),
@@ -4542,7 +4277,7 @@ always_ff@(negedge clk)
 `ifdef FLOP_EXEC_COMPLETE
    always_ff@(posedge clk)
      begin
-	complete_valid_1 <= reset ? 1'b0 :(r_start_int & t_alu_valid) | t_mul_complete | t_div_complete;
+	complete_valid_1 <= reset ? 1'b0 :(r_start_int & t_alu_valid) | t_mul_complete;
 	complete_valid_2 <= reset ? 1'b0 : r_start_int2;
      end
 
@@ -4563,16 +4298,16 @@ always_ff@(negedge clk)
    always_ff@(posedge clk)
      begin
 	complete_bundle_1.rsb_ptr <= int_uop.rsb_ptr;	
-	if(t_mul_complete | t_div_complete)
+	if(t_mul_complete)
 	  begin
-	     complete_bundle_1.rob_ptr <= t_mul_complete ? t_rob_ptr_out :  t_div_rob_ptr;
+	     complete_bundle_1.rob_ptr <= t_rob_ptr_out;
 	     complete_bundle_1.complete <= 1'b1;
 	     complete_bundle_1.faulted <= 1'b0;
 	     complete_bundle_1.restart_pc <= 'd0;
 	     complete_bundle_1.cause <= MISALIGNED_FETCH;
 	     complete_bundle_1.has_cause <= 1'b0;	     
 	     complete_bundle_1.take_br <= 1'b0;
-	     complete_bundle_1.data <= t_mul_complete ? t_mul_result : t_div_result;
+	     complete_bundle_1.data <= t_mul_result;
 	     complete_bundle_1.rsb_ptr_valid <= 1'b0;
 	  end
 	else
@@ -4591,7 +4326,7 @@ always_ff@(negedge clk)
 `else
    always_comb
      begin
-	complete_valid_1 = (r_start_int & t_alu_valid) | t_mul_complete | t_div_complete;
+	complete_valid_1 = (r_start_int & t_alu_valid) | t_mul_complete;
 	complete_valid_2 = r_start_int2;
      end
 
@@ -4612,16 +4347,16 @@ always_ff@(negedge clk)
    always_comb
      begin
 	complete_bundle_1.rsb_ptr = int_uop.rsb_ptr;		
-	if(t_mul_complete | t_div_complete)
+	if(t_mul_complete)
 	  begin
-	     complete_bundle_1.rob_ptr = t_mul_complete ? t_rob_ptr_out :  t_div_rob_ptr;
+	     complete_bundle_1.rob_ptr = t_rob_ptr_out;
 	     complete_bundle_1.complete = 1'b1;
 	     complete_bundle_1.faulted = 1'b0;
 	     complete_bundle_1.restart_pc = 'd0;
 	     complete_bundle_1.cause = MISALIGNED_FETCH;
 	     complete_bundle_1.has_cause = 1'b0;	     
 	     complete_bundle_1.take_br = 1'b0;
-	     complete_bundle_1.data = t_mul_complete ? t_mul_result : t_div_result;
+	     complete_bundle_1.data = t_mul_result;
 	     complete_bundle_1.rsb_ptr_valid = 1'b0;	     	     	     
 	  end
 	else
@@ -4662,17 +4397,12 @@ always_ff@(negedge clk)
 		      {{ (32-`LG_ROB_ENTRIES){1'b0}}, t_picked_uop2.rob_ptr});
 	  end
 	      
-	if(r_start_int && t_alu_valid || t_mul_complete || t_div_complete)
+	if(r_start_int && t_alu_valid || t_mul_complete)
 	  begin
 	     if(t_mul_complete)	       
 	       begin
 		  pt_complete(r_cycle, 
 			      {{ (32-`LG_ROB_ENTRIES){1'b0}}, t_rob_ptr_out});		  
-	       end
-	     else if(t_div_complete)
-	       begin
-		  pt_complete(r_cycle, 
-			      {{ (32-`LG_ROB_ENTRIES){1'b0}}, t_div_rob_ptr});		  
 	       end
 	     else
 	       begin

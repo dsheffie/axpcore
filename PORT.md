@@ -252,12 +252,33 @@ next moves :
   the zero register zero.  note : yosys needs `read_verilog -sv`
   (sv2v keeps size casts)
 
+## dead-code sweep, stage 1 (structural)
+
+gone : the divider (nu_divider/divider files, exec plumbing through
+the scheduler ready/wakeup/writeback muxes, DIV*/REM* enums,
+uses_div; MAX_LAT is now MUL_LAT+3), all fp32 (fp_*.sv files, mul.sv
+rewritten pure-integer, SP_*/INT_TO_SP enums+arms, MULH too), the
+AMO path (exec agu arms, nu_l1d rmw alu + response arms, amo_op
+field, MEM_AMO* / AMOW/AMOD enums), decode_riscv.sv deleted.
+divide_ready output tied 1 for core.sv's drain state.
+
+lesson re-learned : the amo cut initially took the neighboring
+link-reg defaults with it - verilator's LATCH warning caught it
+immediately.  lint after every excision.
+
+verified : build + cosim + perf + csmith + the formal proof all green
+on the slimmed tree.  l1d.sv / perfect_l1d.sv (unused alternates) now
+reference removed enums - they were already stale for alpha; left in
+place, not in the build.
+
 ## next
 
-1. cheaper monitor path (skip the L2 walk for syscalls?)
-2. r9999 also has formal_l1d_fwd - port when the l1d gets attention
-3. dead-code sweep : uop.vh riscv enums, div/AMO exec arms, CSR file,
-   interpret.cc riscv paths (top.cc still links them harmlessly)
+1. dead-code sweep stage 2 : riscv-only ALU arms + enums (W-ops,
+   rotates, min/max, zicond, riscv branches, CMOV_EQZ/NEZ, LB/LH/LWU
+   + MEM_LB/LH/LWU in nu_l1d), then the CSR/priv block in exec +
+   core's WRITE_CSRS interplay, then interpret.cc riscv paths
+2. cheaper monitor path (skip the L2 walk for syscalls?)
+3. r9999 also has formal_l1d_fwd - port when the l1d gets attention
 2. wire the alpha ISS into the store queue so wr_log store compare
    works; directed ldl_l/stl_c + stq_u co-sim tests
 3. bigger co-sim runs : csmith with a freestanding print shim (glibc

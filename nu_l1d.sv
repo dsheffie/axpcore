@@ -1547,8 +1547,8 @@ module nu_l1d(clk,
 	endcase
      end
 
-   wire        w_store32 = (r_req.op == MEM_SW || r_req.op == MEM_AMOW || r_req.op == MEM_SCW);
-   wire        w_store64 = (r_req.op == MEM_SD || r_req.op == MEM_AMOD || r_req.op == MEM_SCD);
+   wire        w_store32 = (r_req.op == MEM_SW || r_req.op == MEM_SCW);
+   wire        w_store64 = (r_req.op == MEM_SD || r_req.op == MEM_SCD);
    
    wire [63:0] w_store_mask = 
 	       r_req.op == MEM_SB ? 64'hff :
@@ -1557,8 +1557,6 @@ module nu_l1d(clk,
 	       w_store64 ? 64'hffffffffffffffff :
 	       'd0;   
 
-   logic [31:0] t_amo32_data;
-   logic [63:0]	t_amo64_data;
 
    logic [63:0]	r_mtimecmp;
    logic	r_mtimecmp_val;
@@ -1640,7 +1638,7 @@ module nu_l1d(clk,
 	     wr_log(r_req.pc,
 		    { {(32-`LG_ROB_ENTRIES){1'b0}}, r_req.rob_ptr},
 		    r_req.addr, 
-		    r_req.op == MEM_AMOD ? t_amo64_data : (r_req.op == MEM_AMOW ? {{32{t_amo32_data[31]}},t_amo32_data} : r_req.data), 
+		    r_req.data, 
 		    r_req.is_atomic ? 32'd1 : 32'd0);
 `ifdef VERBOSE_L1D			    
 		  if(r_req.is_atomic)
@@ -1664,6 +1662,9 @@ module nu_l1d(clk,
 	t_array_data = 'd0;
 	t_wr_array = 1'b0;
 	t_wr_store = 1'b0;
+	t_wr_link_reg = 1'b0;
+	n_link_reg = r_link_reg;
+	n_link_reg_val = r_link_reg_val;
 	
 	t_rsp_dst_valid = 1'b0;
 	t_rsp_data = 'd0;
@@ -1672,51 +1673,6 @@ module nu_l1d(clk,
 	t_store_shift = {64'd0, r_req.data} << {r_req.addr[`LG_L1D_CL_LEN-1:0], 3'd0};
 	t_store_mask = {64'd0, w_store_mask} << {r_req.addr[`LG_L1D_CL_LEN-1:0], 3'd0};
 
-	t_amo32_data = 32'hdeadbeef;
-	t_amo64_data = 64'hd0debabefacebeef;
-
-	t_wr_link_reg = 1'b0;
-	n_link_reg = r_link_reg;
-	n_link_reg_val = r_link_reg_val;
-	
-	case(r_req.amo_op)
-	  5'd0: /* amoadd */
-	    begin
-	       t_amo32_data = t_shift[31:0] + r_req.data[31:0];
-	       t_amo64_data = t_shift[63:0] + r_req.data[63:0];
-	       //$display("amo add data %x", r_req.data);
-	    end
-	  5'd1: /* amoswap */
-	    begin
-	       t_amo32_data = r_req.data[31:0];
-	       t_amo64_data = r_req.data[63:0];
-	    end
-	  5'd4:
-	    begin
-	       t_amo32_data = t_shift[31:0] ^ r_req.data[31:0];
-	       t_amo64_data = t_shift[63:0] ^ r_req.data[63:0];
-	    end
-	  5'd8: /* amoor */
-	    begin
-	       t_amo32_data = t_shift[31:0] | r_req.data[31:0];
-	       t_amo64_data = t_shift[63:0] | r_req.data[63:0];
-	    end
-	  5'd12: /* amoand */
-	    begin
-	       t_amo32_data = t_shift[31:0] & r_req.data[31:0];
-	       t_amo64_data = t_shift[63:0] & r_req.data[63:0];
-	    end
-	  5'd28: /* amomax */
-	    begin
-	       t_amo32_data = t_shift[31:0] < r_req.data[31:0] ? r_req.data[31:0] : t_shift[31:0];
-	       t_amo64_data = t_shift[63:0] < r_req.data[63:0] ? r_req.data[63:0] : t_shift[63:0];
-	    end
-	  
-	  default:
-	    begin
-	    end
-	endcase // case (r_req.amo_op)
-	
 	case(r_req.op)
 	  MEM_LB:
 	    begin
@@ -1797,23 +1753,6 @@ module nu_l1d(clk,
 			    (r_is_retry | r_did_reload) & (!r_req.has_cause);
 	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
 	       //n_link_reg_val = t_wr_store ? 1'b0 : r_link_reg_val;	       
-	    end
-	  MEM_AMOW:
-	    begin
-	       //return old data
-	       t_rsp_data = {{32{t_shift[31]}}, t_shift[31:0]};
-	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
-	       t_store_shift = {96'd0, t_amo32_data} << {r_req.addr[`LG_L1D_CL_LEN-1:0], 3'd0};	       
-	       t_array_data = (t_store_shift & t_store_mask) | ((~t_store_mask) & t_data);
-	       t_wr_store = t_hit_cache & (r_is_retry | r_did_reload) & (!r_req.has_cause);
-	    end // case: MEM_AMOW
-	  MEM_AMOD:
-	    begin
-	       t_rsp_data = t_shift[63:0];
-	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
-	       t_store_shift = {64'd0, t_amo64_data} << {r_req.addr[`LG_L1D_CL_LEN-1:0], 3'd0};
-	       t_array_data = (t_store_shift & t_store_mask) | ((~t_store_mask) & t_data);
-	       t_wr_store = t_hit_cache & (r_is_retry | r_did_reload) & (!r_req.has_cause);
 	    end
 	  
 	  default:

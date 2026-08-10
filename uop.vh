@@ -69,8 +69,6 @@ typedef enum logic [7:0]
    LRD, //8
    SCW, //9
    SCD, //10
-   AMOW,//11
-   AMOD, //12
    MONITOR, //13
    RDCYCLE, //14
    RDINSTRET, //15
@@ -89,12 +87,7 @@ typedef enum logic [7:0]
    CSRRCI,   
    SFENCEVMA,
    MUL,
-   MULH,
    MULHU,
-   DIV,
-   DIVU,
-   REM,
-   REMU,
    SLTI,
    SLTIU,   
    ADDU,
@@ -144,10 +137,6 @@ typedef enum logic [7:0]
    SRAIW,
    SRAW,
    MULW,
-   DIVW,
-   DIVUW,
-   REMW,
-   REMUW,
    SLLW,
    SRLW,
    CZEQZ,
@@ -185,20 +174,6 @@ typedef enum logic [7:0]
    CPOPW,
    ORCB,
    FENCEI,
-   SP_ADD,
-   SP_SUB,
-   SP_MUL,
-   SP_CMP_OLT,
-   SP_CMP_OGT,
-   SP_CMP_ONE,
-   SP_CMP_OEQ,
-   SP_CMP_ULT,
-   SP_CMP_UGT,
-   SP_CMP_UNE,
-   SP_CMP_UEQ,
-   INT_TO_SP,
-   UINT_TO_SP,
-   SP_TO_INT,
    WB_CACHES,
    FETCH_PF,
    FETCH_NOT_EXEC,
@@ -267,47 +242,14 @@ function logic uses_mul(opcode_t op);
        x = 1'b1;
      MULHU:
        x = 1'b1;
-     MULH:
-       x = 1'b1;
      MULW:
        x = 1'b1;
-     SP_MUL:
-       x = 1'b1;
-     SP_ADD:
-       x = 1'b1;
-     SP_SUB:
-       x = 1'b1;
-     
      default:
        x = 1'b0;
    endcase
    return x;
 endfunction // is_mult
 
-function logic uses_div(opcode_t op);
-   logic     x;
-   case(op)
-     DIV:
-       x = 1'b1;
-     DIVU:
-       x = 1'b1;
-     REM:
-       x = 1'b1;
-     REMU:
-       x = 1'b1;
-     DIVW:
-       x = 1'b1;
-     DIVUW:
-       x = 1'b1;
-     REMW:
-       x = 1'b1;
-     REMUW:
-       x = 1'b1;
-     default:
-       x = 1'b0;
-   endcase
-   return x;
-endfunction // is_div
 
 
 

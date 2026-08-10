@@ -145,10 +145,30 @@ what the switchover added:
   ISS-vs-qemu only - on RTL the callsys registers are invisible to
   the monitor path
 
+## IPC profile (alpha_perf.c, checker off - rpcc diverges by design)
+
+per-phase IPC from one binary : ISS run gives icnt per phase (rpcc =
+icnt there), RTL run gives cycles.  `sink` matches ISS<->RTL, a free
+correctness check.
+
+- independent ALU : **2.00** (full width) ; streaming stores : 2.00
+- dependent add chain : 1.25 = theoretical bound (1-cycle forwarding)
+- dependent zapper chain : 1.25 (single-cycle, fully forwarded)
+- L1-hit pointer chase : 2-cycle load-to-use
+- 50% random branches : ~3.7 extra cycles per mispredict
+- register-form cmov : 0.71 insn-IPC / ~1.06 uop-IPC (2 uops by
+  design + the slot-1 crack-defer bubble; literal forms are 1 uop)
+- dependent mulq : ~5 cyc effective vs MUL_LAT=3 - scheduler wakeup
+  gap for the mul unit, worth a look someday
+
+conclusion : the 0.147 IPC on alpha_cosim_test was entirely the
+serializing cache-flush in the MONITOR path (each htif print walks
+all of L2).  the core itself is healthy.
+
 ## next
 
-1. IPC is low (0.147) on alpha_cosim_test - profile where the stalls
-   come from (predictor training? crack serialization? pipe0-only ops?)
+1. checker acceptance for RDCYCLE-class divergence so perf binaries
+   can co-sim; cheaper monitor path (skip the L2 flush for syscalls?)
 2. wire the alpha ISS into the store queue so wr_log store compare
    works; directed ldl_l/stl_c + stq_u co-sim tests
 3. bigger co-sim runs : csmith with a freestanding print shim (glibc

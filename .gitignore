@@ -13,3 +13,4 @@ rv64_core
 *-tip.txt
 *-branch_info.txt
 csmith_alpha_rtl/
+mem.csv

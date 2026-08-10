@@ -60,21 +60,14 @@ typedef enum logic [7:0]
   {
    SRL, //0
    SRA, //1
-   SRLV, //2
-   SRAV, //3
    SLT, //4
    SLTU, //5
-   ADDIU, //6
    LRW, //7
    LRD, //8
    SCW, //9
    SCD, //10
    MONITOR, //13
    RDCYCLE, //14
-   RDINSTRET, //15
-   RDBRANCH, //16
-   RDFAULTEDBRANCH,
-   RDFAULTEDIBRANCH,   
    ECALL,
    EBREAK,
    MRET,
@@ -88,25 +81,11 @@ typedef enum logic [7:0]
    SFENCEVMA,
    MUL,
    MULHU,
-   SLTI,
-   SLTIU,   
    ADDU,
    SUBU,
    ANDI,   
-   BEQ,
-   BGE,
-   BGEU,
-   BLT, 
-   BLTU,  
-   BNE,
    SLL,
-   SLLI,
-   SRAI,
-   SRLI,   
-   LB,
-   LH,
    LW,
-   LWU,
    LD,
    LBU,
    LHU,
@@ -114,8 +93,6 @@ typedef enum logic [7:0]
    SH,
    SW,
    SD,
-   ORI,
-   XORI,
    J,
    JAL,
    JR,
@@ -123,64 +100,29 @@ typedef enum logic [7:0]
    JALR,
    BREAK,
    ADDI,
-   AUIPC,
-   LUI,   
    NOP,
    AND,
    OR,
    XOR,
    ADDW,
    SUBW,
-   ADDIW,
-   SLLIW,
-   SRLIW,
-   SRAIW,
-   SRAW,
    MULW,
-   SLLW,
-   SRLW,
-   CZEQZ,
-   CZNEZ,
-   ADD_UW,
-   SH1ADD,
-   SH1ADD_UW,
    SH2ADD,
-   SH2ADD_UW,
    SH3ADD,
-   SH3ADD_UW,   
-   SLLI_UW,
    ANDN,
    ORN,
    XNOR,
    SEXTB,
    SEXTH,   
-   ZEXTH,
-   MIN,
-   MINU,
-   MAX,
-   MAXU,
-   ROL,
-   ROLW,
-   ROR,
-   RORI,
-   RORIW,
-   RORW,
-   REV8,
    CLZ,
-   CLZW,
    CTZ,
-   CTZW,
    CPOP,
-   CPOPW,
-   ORCB,
    FENCEI,
    WB_CACHES,
    FETCH_PF,
    FETCH_NOT_EXEC,
    PREFETCH_R,
    IRQ,
-   CMOV_EQZ, //cracked cmov, first uop : test rs1, pass old rd
-   CMOV_NEZ,
    CMOV_HI, //cracked cmov, second uop : select rs2 or passed-thru old rd
    /* alpha ops.  reg-or-lit8 second operand : the lit form clears
     * srcB_valid and carries the literal in rvimm, exec muxes

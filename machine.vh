@@ -99,9 +99,7 @@
 `define MTIMECMP_ADDR (64'h40004000)
 
 typedef enum logic [4:0] {
-   MEM_LB  = 'd0,
    MEM_LBU = 'd1,
-   MEM_LH  = 'd2,
    MEM_LHU = 'd3,
    MEM_LW  = 'd4,
    MEM_SB  = 'd5,
@@ -110,7 +108,6 @@ typedef enum logic [4:0] {
    MEM_SCW  = 'd8,
    MEM_SCD  = 'd9,
    MEM_NOP = 'd10,
-   MEM_LWU = 'd11,
    MEM_LD  = 'd12,
    MEM_SD  = 'd13,
    MEM_PREFETCH = 'd16			  			  

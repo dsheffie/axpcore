@@ -372,7 +372,6 @@ module exec(clk,
    logic 	t_signed_shift, t_circular_shift;
    logic 	t_left_shift;
 
-   logic	t_zero_shift_upper, t_dup_shift_upper;
    logic [5:0] 	t_shift_amt;
    wire [63:0] w_shifter_out;
 
@@ -947,10 +946,8 @@ module exec(clk,
       return x;
    endfunction // alpha_cmov_cond
 
-   wire	w_int_uop_is_cmov_lo = (int_uop.op == CMOV_EQZ) | (int_uop.op == CMOV_NEZ) | (int_uop.op == CMOV_LO);
-   wire	w_cmov_pred = (int_uop.op == CMOV_EQZ) ? (t_srcA == 'd0) :
-	(int_uop.op == CMOV_NEZ) ? (t_srcA != 'd0) :
-	alpha_cmov_cond(int_uop.imm[2:0], t_srcA);
+   wire	w_int_uop_is_cmov_lo = (int_uop.op == CMOV_LO);
+   wire	w_cmov_pred = alpha_cmov_cond(int_uop.imm[2:0], t_srcA);
    wire	w_cmov_hi_pred = r_fwd_int_srcA ? r_int_pred :
 	r_cmov_pred[int_uop.srcA[`LG_PRF_ENTRIES-2:0]];
 
@@ -1275,13 +1272,10 @@ module exec(clk,
 
    logic t_left_shift2, t_signed_shift2,t_circular_shift2;
    wire [63:0] w_shifter_out2;
-   logic	       t_zero_shift_upper2;
    logic [5:0] t_shift_amt2;   
    wire [63:0] w_pc2_4;
 
-   wire [63:0] w_shift2_srcA = 
-	       t_zero_shift_upper2 ? {{32{(t_signed_shift2 ? t_srcA_2[31] : 1'b0)}}, t_srcA_2[31:0]} : 
-	       t_srcA_2;
+   wire [63:0] w_shift2_srcA = t_srcA_2;
    
    shift_right #(.LG_W(6))
    s1(.is_left(t_left_shift2), 
@@ -1313,7 +1307,6 @@ module exec(clk,
    wire [63:0] w_as64_, w_as64_2_;
 
    wire [63:0] w_srcA_shl = 
-	       (int_uop.op == SH1ADD) ? {t_srcA[62:0], 1'b0} :
 	       (int_uop.op == SH2ADD) ? {t_srcA[61:0], 2'b0} :
 	       (int_uop.op == SH3ADD) ? {t_srcA[60:0], 3'b0} :
 	       (int_uop.op == S4ADDL) ? {t_srcA[61:0], 2'b0} :
@@ -1322,14 +1315,9 @@ module exec(clk,
 	       (int_uop.op == S8ADDL) ? {t_srcA[60:0], 3'b0} :
 	       (int_uop.op == S8SUBL) ? {t_srcA[60:0], 3'b0} :
 	       (int_uop.op == S8SUBQ) ? {t_srcA[60:0], 3'b0} :
-	       (int_uop.op == SH1ADD_UW) ? {31'd0, t_srcA[31:0], 1'b0} :
-	       (int_uop.op == SH2ADD_UW) ? {30'd0, t_srcA[31:0], 2'b0} :
-	       (int_uop.op == SH3ADD_UW) ? {29'd0, t_srcA[31:0], 3'b0} :	       
-	       (int_uop.op == ADD_UW) ? {32'd0, t_srcA[31:0]} :
 	       t_srcA;
 
    wire [63:0] w_srcA_shl_2 = 
-	       (int_uop2.op == SH1ADD) ? {t_srcA_2[62:0], 1'b0} :
 	       (int_uop2.op == SH2ADD) ? {t_srcA_2[61:0], 2'b0} :
 	       (int_uop2.op == SH3ADD) ? {t_srcA_2[60:0], 3'b0} :
 	       (int_uop2.op == S4ADDL) ? {t_srcA_2[61:0], 2'b0} :
@@ -1338,10 +1326,6 @@ module exec(clk,
 	       (int_uop2.op == S8ADDL) ? {t_srcA_2[60:0], 3'b0} :
 	       (int_uop2.op == S8SUBL) ? {t_srcA_2[60:0], 3'b0} :
 	       (int_uop2.op == S8SUBQ) ? {t_srcA_2[60:0], 3'b0} :
-	       (int_uop2.op == SH1ADD_UW) ? {31'd0, t_srcA_2[31:0], 1'b0} :
-	       (int_uop2.op == SH2ADD_UW) ? {30'd0, t_srcA_2[31:0], 2'b0} :
-	       (int_uop2.op == SH3ADD_UW) ? {29'd0, t_srcA_2[31:0], 3'b0} :	       
-	       (int_uop2.op == ADD_UW) ? {32'd0, t_srcA_2[31:0]} :	       
 	       t_srcA_2;
 
    
@@ -1377,13 +1361,6 @@ module exec(clk,
    
    wire	       w_signed_A_lt_B_2 = $signed(t_srcA_2) < $signed(w_opB_2);
    wire	       w_A_lt_B_2 = t_srcA_2 < w_opB_2;   
-   wire [63:0]	       w_bswap_srcA_2;
-   generate
-      for(genvar i = 0; i < 8; i=i+1)
-	begin
-	   assign w_bswap_srcA_2[(i+1)*8-1:(i*8)] = t_srcA_2[(8*(8-i))-1:8*(8-(i+1))];
-	end
-   endgenerate
 
    
    always_comb
@@ -1401,52 +1378,9 @@ module exec(clk,
 	t_alu_valid2 = 1'b0;
 	t_result2 = 'd0;
 	t_wr_int_prf2 = 1'b0;
-	t_zero_shift_upper2 = 1'b0;
 `ifdef SECOND_EXEC_PORT	
 	case(int_uop2.op)
 `ifdef TWO_SRC_CHEAP	  
-	  BNE:
-	    begin
-	       t_take_br2 = t_srcA_2 != t_srcB_2;
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       
-	    end
-	  BEQ:
-	    begin
-	       t_take_br2 = t_srcA_2 == t_srcB_2;
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       
-	    end
-	  BLT:
-	    begin
-	       t_take_br2 = $signed(t_srcA_2) < $signed(t_srcB_2);
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       	       
-	    end
-	  BGE:
-	    begin
-	       t_take_br2 = $signed(t_srcA_2) >= $signed(t_srcB_2);
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       	       
-	    end
-	  BLTU:
-	    begin
-	       t_take_br2 = t_srcA_2 < t_srcB_2;
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       	       
-	    end
-	  BGEU:
-	    begin
-	       t_take_br2 = t_srcA_2 >= t_srcB_2;
-	       t_mispred_br2 = int_uop2.br_pred != t_take_br2;
-	       t_pc_2 = t_take_br2 ? int_uop2.rvimm : w_pc2_4;
-	       t_alu_valid2 = 1'b1;	       	       
-	    end
 `endif
 	  JAL:
 	    begin
@@ -1603,33 +1537,8 @@ module exec(clk,
 	       t_alu_valid2 = 1'b1;
 	       t_wr_int_prf2 = 1'b1;
 	    end
-	  ADDIW:
-	    begin
-	       t_addi_2 = 1'b1;
-	       t_result2 = w_as64_2_sext;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
 `ifdef TWO_SRC_CHEAP
-	  CZEQZ:
-	    begin
-	       t_result2 = w_srcB_is_zero_2 ? 64'd0 : t_srcA_2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;	       
-	    end
-	  CZNEZ:
-	    begin
-	       t_result2 = !w_srcB_is_zero_2 ? 64'd0 : t_srcA_2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
 	  ADDU:
-	    begin
-	       t_result2 = w_as64_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  SH1ADD:
 	    begin
 	       t_result2 = w_as64_2;
 	       t_alu_valid2 = 1'b1;
@@ -1647,30 +1556,6 @@ module exec(clk,
 	       t_alu_valid2 = 1'b1;
 	       t_wr_int_prf2 = 1'b1;
 	    end
-	  SH1ADD_UW:
-	    begin
-	       t_result2 = w_as64_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  SH2ADD_UW:
-	    begin
-	       t_result2 = w_as64_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  SH3ADD_UW:
-	    begin
-	       t_result2 = w_as64_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end	  
-	  ADD_UW:
-	    begin
-	       t_result2 = w_as64_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end	  
 	  ADDW:
 	    begin
 	       t_result2 = w_as64_2_sext;
@@ -1690,18 +1575,6 @@ module exec(clk,
 	       t_wr_int_prf2 = 1'b1;
 	    end
 `endif
-	  SLTI:
-	    begin
-	       t_result2 = {w_zf, $signed(t_srcA_2) < $signed(int_uop2.rvimm)};
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  SLTIU:
-	    begin
-	       t_result2 = {w_zf, t_srcA_2 < int_uop2.rvimm};
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
 `ifdef TWO_SRC_CHEAP
 	  SUBU:
 	    begin
@@ -1721,18 +1594,6 @@ module exec(clk,
 	  ANDI:
 	    begin
 	       t_result2 = int_uop2.rvimm & t_srcA_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  ORI:
-	    begin
-	       t_result2 = int_uop2.rvimm | t_srcA_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  XORI:
-	    begin
-	       t_result2 = int_uop2.rvimm ^ t_srcA_2;
 	       t_alu_valid2 = 1'b1;
 	       t_wr_int_prf2 = 1'b1;
 	    end
@@ -1781,13 +1642,6 @@ module exec(clk,
 	       t_alu_valid2 = 1'b1;
 	    end
 `endif
-	  SRLI:
-	    begin
-	       t_shift_amt2 = {(mode64 ? int_uop2.rvimm[5] : 1'b0), int_uop2.rvimm[4:0]};
-	       t_result2 = w_shifter_out2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;	       
-	    end
 `ifdef TWO_SRC_CHEAP			 	  	  
 	  SRA:
 	    begin
@@ -1797,49 +1651,8 @@ module exec(clk,
 	       t_wr_int_prf2 = 1'b1;
 	       t_alu_valid2 = 1'b1;
 	    end
-	  SRAW:
-	    begin
-	       t_signed_shift2 = 1'b1;
-	       t_shift_amt2 = {1'b0,t_srcB_2[4:0]};	       
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
-	  SRLW:
-	    begin
-	       t_zero_shift_upper2 = 1'b1;	       
-	       t_shift_amt2 = {1'b0,t_srcB_2[4:0]};	       
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
 `endif
-	  SRAIW:
-	    begin
-	       t_signed_shift2 = 1'b1;
-	       t_shift_amt2 = {1'b0, int_uop2.rvimm[4:0]};
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;	
-	       t_zero_shift_upper2 = 1'b1;	
-	    end
-	  SRLIW:
-	    begin
-	       t_shift_amt2 = {1'b0, int_uop2.rvimm[4:0]};
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	       t_zero_shift_upper2 = 1'b1;
-	    end
 	  
-	  SRAI:
-	    begin
-	       t_signed_shift2 = 1'b1;
-	       t_shift_amt2 = {(mode64 ? int_uop2.rvimm[5] : 1'b0), int_uop2.rvimm[4:0]};
-	       t_result2 = w_shifter_out2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;		
-	    end
 `ifdef TWO_SRC_CHEAP			 	  	  
 	  SLL:
 	    begin
@@ -1849,76 +1662,7 @@ module exec(clk,
 	       t_wr_int_prf2 = 1'b1;
 	       t_alu_valid2 = 1'b1;
 	    end
-	  SLLW:
-	    begin
-	       t_left_shift2 = 1'b1;
-	       t_shift_amt2 = {1'b0, t_srcB_2[4:0]};
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
-	  MAX:
-	    begin
-	       t_result2 = w_signed_A_lt_B_2 ? t_srcB_2 : t_srcA_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  MAXU:
-	    begin
-	       t_result2 = w_A_lt_B_2 ? t_srcB_2 : t_srcA_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end	  
-	  MIN:
-	    begin
-	       t_result2 = w_signed_A_lt_B_2 ? t_srcA_2 : t_srcB_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  MINU:
-	    begin
-	       t_result2 = w_A_lt_B_2 ? t_srcA_2 : t_srcB_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  REV8:
-	    begin
-	       t_result2 = w_bswap_srcA_2;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
 `endif
-	  SLLI:
-	    begin
-	       t_left_shift2 = 1'b1;	       
-	       t_shift_amt2 = {(mode64 ? int_uop2.rvimm[5] : 1'b0), int_uop2.rvimm[4:0]};
-	       t_result2 = w_shifter_out2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;		
-	    end
-	  SLLIW:
-	    begin
-	       t_left_shift2 = 1'b1;
-	       t_shift_amt2 = int_uop2.rvimm[5:0];	       
-	       t_result2 = {{32{w_shifter_out2[31]}}, w_shifter_out2[31:0]};
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
-	  SLLI_UW:
-	    begin
-	       t_left_shift2 = 1'b1;
-	       t_shift_amt2 = int_uop2.rvimm[5:0];
-	       t_zero_shift_upper2 = 1'b1;
-	       t_result2 = w_shifter_out2;
-	       t_wr_int_prf2 = 1'b1;
-	       t_alu_valid2 = 1'b1;
-	    end
-	  ZEXTH:
-	    begin
-	       t_result2 = { 48'd0, t_srcA_2[15:0] };
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
 	  SEXTB:
 	    begin
 	       t_result2 = { {56{t_srcA_2[7]}}, t_srcA_2[7:0] };
@@ -1928,18 +1672,6 @@ module exec(clk,
 	  SEXTH:
 	    begin
 	       t_result2 = { {48{t_srcA_2[15]}}, t_srcA_2[15:0] };
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  AUIPC:
-	    begin
-	       t_result2 = int_uop2.rvimm;
-	       t_alu_valid2 = 1'b1;
-	       t_wr_int_prf2 = 1'b1;
-	    end
-	  LUI:
-	    begin
-	       t_result2 = int_uop2.rvimm;
 	       t_alu_valid2 = 1'b1;
 	       t_wr_int_prf2 = 1'b1;
 	    end
@@ -1994,10 +1726,7 @@ module exec(clk,
      end // always_ff@ (posedge clk)
    
    
-   wire [63:0] w_shift_src = t_dup_shift_upper ? {t_srcA[31:0], t_srcA[31:0]} : 
-	       t_zero_shift_upper ? 
-	       {{32{(t_signed_shift ? t_srcA[31] : 1'b0)}}, t_srcA[31:0]} : 
-	       t_srcA;
+   wire [63:0] w_shift_src = t_srcA;
    
    
    shift_right #(.LG_W(`LG_M_WIDTH)) 
@@ -2223,18 +1952,9 @@ module exec(clk,
       
    mwidth_add add3 (.A(int_uop.pc), .B(64'd4), .Y(w_pc4));
 
-   wire		       w_srcB_is_zero = (t_srcB == 64'd0);
-   wire		       w_srcB_is_zero_2 = (t_srcB_2 == 64'd0);   
    
    wire		       w_signed_A_lt_B = $signed(t_srcA) < $signed(w_opB);
    wire		       w_A_lt_B = t_srcA < w_opB;
-   wire [63:0]	       w_bswap_srcA;
-   generate
-      for(genvar i = 0; i < 8; i=i+1)
-	begin
-	   assign w_bswap_srcA[(i+1)*8-1:(i*8)] = t_srcA[(8*(8-i))-1:8*(8-(i+1))];
-	end
-   endgenerate
 
 
    wire [63:0] w_clz0_in = t_is_clzw_ctzw_cpopw ? {32'd0, t_srcA[31:0]} : t_srcA;
@@ -2304,9 +2024,6 @@ module exec(clk,
 	t_signed_mul = 1'b0;
 	t_is_mulw = 1'b0;
 	
-	t_zero_shift_upper = 1'b0;
-	t_dup_shift_upper = 1'b0;
-	
 	case(int_uop.op)
 	  //riscv
 	  MUL:
@@ -2331,20 +2048,7 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
-	  ADDIW:
-	    begin
-	       t_addi = 1'b1;
-	       t_result = w_as64_sext;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  
 	  ADDU:
-	    begin
-	       t_result = w_as64;	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SH1ADD:
 	    begin
 	       t_result = w_as64;	       
 	       t_wr_int_prf = 1'b1;
@@ -2362,30 +2066,6 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
-	  SH1ADD_UW:
-	    begin
-	       t_result = w_as64;	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SH2ADD_UW:
-	    begin
-	       t_result = w_as64;	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SH3ADD_UW:
-	    begin
-	       t_result = w_as64;	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  
-	  ADD_UW:
-	    begin
-	       t_result = w_as64;	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  
 	  ADDW:
 	    begin
 	       t_result = w_as64_sext;	       
@@ -2406,34 +2086,6 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_pc = w_pc4;	       
 	    end
-	  RDINSTRET:
-	    begin
-	       t_result = r_retired_insns[`M_WIDTH-1:0];
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	       t_pc = w_pc4;
-	    end
-	  RDBRANCH:
-	    begin
-	       t_result = r_branches[`M_WIDTH-1:0];      
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	       t_pc = w_pc4;	       
-	    end
-	  RDFAULTEDBRANCH:
-	    begin
-	       t_result = r_branch_faults[`M_WIDTH-1:0];
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	       t_pc = w_pc4;
-	    end
-	  RDFAULTEDIBRANCH:
-	    begin
-	       t_result = r_indirect_branch_faults;
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	       t_pc = w_pc4;
-	    end	  
 	  AND:
 	    begin
 	       t_result = t_srcA & w_opB;
@@ -2459,12 +2111,6 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
-	  ZEXTH:
-	    begin
-	       t_result = { 48'd0, t_srcA[15:0] };
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;
-	    end
 	  SEXTB:
 	    begin
 	       t_result = { {56{t_srcA[7]}}, t_srcA[7:0] };
@@ -2476,70 +2122,6 @@ module exec(clk,
 	       t_result = { {48{t_srcA[15]}}, t_srcA[15:0] };
 	       t_alu_valid = 1'b1;
 	       t_wr_int_prf = 1'b1;
-	    end
-	  MAX:
-	    begin
-	       t_result = w_signed_A_lt_B ? t_srcB : t_srcA;
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;	       
-	    end
-	  MAXU:
-	    begin
-	       t_result = w_A_lt_B ? t_srcB : t_srcA;
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;	       
-	    end
-	  MIN:
-	    begin
-	       t_result = w_signed_A_lt_B ? t_srcA : t_srcB;
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;	       
-	    end
-	  MINU:
-	    begin
-	       t_result = w_A_lt_B ? t_srcA : t_srcB;
-	       t_alu_valid = 1'b1;
-	       t_wr_int_prf = 1'b1;	       
-	    end
-	  AUIPC:
-	    begin
-	       t_result = int_uop.rvimm;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  BEQ:
-	    begin
-	       t_take_br = (t_srcA == t_srcB);
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;	       
-	       t_alu_valid = 1'b1;
-	    end
-	  CZEQZ:
-	    begin
-	       t_result = w_srcB_is_zero ? 64'd0 : t_srcA;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       
-	    end
-	  CZNEZ:
-	    begin
-	       t_result = !w_srcB_is_zero ? 64'd0 : t_srcA;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  CMOV_EQZ:
-	    begin
-	       /* low uop of cracked cmov : srcA is the tested reg, srcB
-		* is the old value of rd - pass it through, the
-		* predicate is recorded beside the prf write */
-	       t_result = t_srcB;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  CMOV_NEZ:
-	    begin
-	       t_result = t_srcB;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
 	    end
 	  CMOV_HI:
 	    begin
@@ -2688,42 +2270,7 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
-	  BGE:
-	    begin
-	       t_take_br = $signed(t_srcA) >= $signed(t_srcB);
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;	       
-	       t_alu_valid = 1'b1;
-	    end
-	  BGEU:
-	    begin
-	       t_take_br = t_srcA >= t_srcB;
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
-	       t_alu_valid = 1'b1;
-	    end
-	  BLT:
-	    begin
-	       t_take_br = $signed(t_srcA) < $signed(t_srcB);
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
-	       t_alu_valid = 1'b1;
-	    end
-	  BLTU:
-	    begin
-	       t_take_br = t_srcA < t_srcB;
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
-	       t_alu_valid = 1'b1;
-	    end
 	  
-	  BNE:
-	    begin
-	       t_take_br = (t_srcA != t_srcB);
-	       t_mispred_br = int_uop.br_pred != t_take_br;
-	       t_pc = t_take_br ? int_uop.rvimm : w_pc4;
-	       t_alu_valid = 1'b1;
-	    end
 	  JAL:
 	    begin
 	       t_take_br = 1'b1;
@@ -2758,12 +2305,6 @@ module exec(clk,
 	       t_pc = w_indirect_target;
 	       t_alu_valid = 1'b1;
 	    end
-	  LUI:
-	    begin
-	       t_result = int_uop.rvimm;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;	       
-	    end
 	   OR:
 	     begin
 		t_result = t_srcA | w_opB;	       
@@ -2776,49 +2317,10 @@ module exec(clk,
 		t_wr_int_prf = 1'b1;
 		t_alu_valid = 1'b1;
 	     end
-	   ORI:
-	     begin
-		t_result = t_srcA | int_uop.rvimm;	       
-		t_wr_int_prf = 1'b1;
-		t_alu_valid = 1'b1;
-	     end
 	  SLL:
 	    begin
 	       t_left_shift = 1'b1;
 	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};
-	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SLLW:
-	    begin
-	       t_left_shift = 1'b1;
-	       t_shift_amt = {1'b0, t_srcB[4:0]};
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  
-	  SLLI:
-	    begin
-	       t_left_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? int_uop.rvimm[5] : 1'b0), int_uop.rvimm[4:0]};	       
-	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SLLIW:
-	    begin
-	       t_left_shift = 1'b1;
-	       t_shift_amt = {1'b0, int_uop.rvimm[4:0]};	       
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SLLI_UW:
-	    begin
-	       t_left_shift = 1'b1;
-	       t_shift_amt = {1'b0, int_uop.rvimm[4:0]};
-	       t_zero_shift_upper = 1'b1;	       	       
 	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
@@ -2832,43 +2334,6 @@ module exec(clk,
 	  SLTU:
 	    begin
 	       t_result = {w_zf, w_A_lt_B};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SLTI:
-	    begin
-	       t_result = {w_zf, $signed(t_srcA) < $signed(int_uop.rvimm)};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SLTIU:
-	    begin
-	       t_result = {w_zf, t_srcA < int_uop.rvimm};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SRAIW:
-	    begin
-	       t_zero_shift_upper = 1'b1;	       
-	       t_signed_shift = 1'b1;
-	       t_shift_amt = {1'b0, int_uop.rvimm[4:0]};	       
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  	  
-	  SRLIW:
-	    begin
-	       t_zero_shift_upper = 1'b1;
-	       t_shift_amt = {1'b0, int_uop.rvimm[4:0]};	       
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  	  
-	  SRAI:
-	    begin
-	       t_signed_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? int_uop.rvimm[5] : 1'b0), int_uop.rvimm[4:0]};	       	       
-	       t_result = w_shifter_out;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
@@ -2890,103 +2355,7 @@ module exec(clk,
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end	  
-	  CTZW:
-	    begin
-	       t_is_clzw_ctzw_cpopw = 1'b1;	       
-	       t_result = w_clz0_zero ? {64{1'b1}} : {57'd0,w_ctz0_out};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  
-	  CLZW:
-	    begin
-	       t_is_clzw_ctzw_cpopw = 1'b1;
-	       t_result = w_clz0_zero ? {64{1'b1}} : {57'd0,w_clz0_out32};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  CPOPW:
-	    begin
-	       t_is_clzw_ctzw_cpopw = 1'b1;
-	       t_result = {57'd0,w_cpop0_out};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  ORCB:
-	    begin
-	       t_result = w_orcb0;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  ROR:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
-	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  RORI:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_shift_amt = {(mode64 ? int_uop.rvimm[5] : 1'b0), int_uop.rvimm[4:0]};	  
-	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  RORIW:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_dup_shift_upper = 1'b1;
-	       t_shift_amt = {(mode64 ? int_uop.rvimm[5] : 1'b0), int_uop.rvimm[4:0]};	  
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  RORW:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_dup_shift_upper = 1'b1;
-	       t_shift_amt = {1'b0,t_srcB[4:0]};
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};	       
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  ROL:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_left_shift = 1'b1;	       
-	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
-	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  ROLW:
-	    begin
-	       t_circular_shift = 1'b1;
-	       t_left_shift = 1'b1;	       
-	       t_dup_shift_upper = 1'b1;
-	       t_shift_amt = {1'b0,t_srcB[4:0]};
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
 	  
-	  SRAW:
-	    begin
-	       t_signed_shift = 1'b1;
-	       t_shift_amt = {1'b0,t_srcB[4:0]};
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SRLW:
-	    begin
-	       t_zero_shift_upper = 1'b1;	       
-	       t_shift_amt = {1'b0,t_srcB[4:0]};
-	       t_result = {{32{w_shifter_out[31]}}, w_shifter_out[31:0]};
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end	  	  
 	  SRA:
 	    begin
 	       t_signed_shift = 1'b1;
@@ -2999,25 +2368,6 @@ module exec(clk,
 	    begin
 	       t_shift_amt = {(mode64 ? w_opB[5] : 1'b0), w_opB[4:0]};	       
 	       t_result = w_shifter_out;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  SRLI:
-	     begin
-		t_shift_amt = {(mode64 ? int_uop.rvimm[5] : 1'b0), int_uop.rvimm[4:0]};		
-		t_result = w_shifter_out;
-		t_wr_int_prf = 1'b1;
-		t_alu_valid = 1'b1;
-	     end
-	  XORI:
-	    begin
-	       t_result = t_srcA ^ int_uop.rvimm;
-	       t_wr_int_prf = 1'b1;
-	       t_alu_valid = 1'b1;
-	    end
-	  REV8:
-	    begin
-	       t_result = w_bswap_srcA;
 	       t_wr_int_prf = 1'b1;
 	       t_alu_valid = 1'b1;
 	    end
@@ -3872,10 +3222,9 @@ module exec(clk,
    logic t_is_load;
    always_comb
      begin
-	t_is_load = (t_mem_uq.op == LW) | (t_mem_uq.op == LWU) | 
-		    (t_mem_uq.op == LD) | (t_mem_uq.op == LB) | 
+	t_is_load = (t_mem_uq.op == LW) | (t_mem_uq.op == LD) |
 		    (t_mem_uq.op == LBU) | (t_mem_uq.op == LHU) |
-		    (t_mem_uq.op == LH) | (t_mem_uq.op == PREFETCH_R); 
+		    (t_mem_uq.op == LDQU) | (t_mem_uq.op == PREFETCH_R);
 	
      end
    
@@ -4120,14 +3469,6 @@ module exec(clk,
 	       t_mem_tail.spans_cacheline = w_bad_32b_addr;
 	       t_mem_tail.unaligned = |w_agu_addr[1:0];
 	    end // case: LW
-	  LWU:
-	    begin
-	       t_mem_tail.is_load = 1'b1;
-	       t_mem_tail.op = w_bad_32b_addr ? MEM_NOP : MEM_LWU;
-	       t_mem_tail.dst_valid = mem_uop.dst_valid;
-	       t_mem_tail.spans_cacheline = w_bad_32b_addr;
-	       t_mem_tail.unaligned = |w_agu_addr[1:0];
-	    end // case: LW	  
 	  LD:
 	    begin
 	       t_mem_tail.is_load = 1'b1;
@@ -4136,12 +3477,6 @@ module exec(clk,
 	       t_mem_tail.spans_cacheline = w_bad_64b_addr;
 	       t_mem_tail.unaligned = |w_agu_addr[2:0];
 	    end // case: LW
-	  LB:
-	    begin
-	       t_mem_tail.is_load = 1'b1;	       
-	       t_mem_tail.op = MEM_LB;
-	       t_mem_tail.dst_valid = mem_uop.dst_valid;
-	    end
 	  LBU:
 	    begin
 	       t_mem_tail.is_load = 1'b1;	       
@@ -4156,14 +3491,6 @@ module exec(clk,
 	       t_mem_tail.spans_cacheline = w_agu_addr[0];
 	       t_mem_tail.unaligned = w_agu_addr[0];
 	    end // case: LBU
-	  LH:
-	    begin
-	       t_mem_tail.is_load = 1'b1;
-	       t_mem_tail.op = w_bad_16b_addr ? MEM_NOP : MEM_LH;
-	       t_mem_tail.dst_valid = mem_uop.dst_valid;
-	       t_mem_tail.spans_cacheline = w_bad_16b_addr;
-	       t_mem_tail.unaligned = w_agu_addr[0];
-	    end // case: LH
 	  PREFETCH_R:
 	    begin
 	       t_mem_tail.is_load = 1'b1;

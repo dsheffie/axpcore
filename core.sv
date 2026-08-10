@@ -1895,7 +1895,7 @@ module core(clk,
 	t_mrob_tail.is_call = (t_alloc_uop.op == JAL) | (t_alloc_uop.op == JALR);
 	t_mrob_tail.is_irq = t_alloc_uop.op == IRQ;
 	t_mrob_tail.is_indirect = (t_alloc_uop.op == JALR) | (t_alloc_uop.op == JR);
-	t_mrob_tail.is_crack_lo = (t_alloc_uop.op == CMOV_EQZ) | (t_alloc_uop.op == CMOV_NEZ) | (t_alloc_uop.op == CMOV_LO);
+	t_mrob_tail.is_crack_lo = (t_alloc_uop.op == CMOV_LO);
 	t_mrob_tail.bpu_idx = t_alloc_uop.bpu_idx;
 	
 	t_mrob_tail.valid_dst = t_uop.dst_valid & t_alloc;
@@ -1914,7 +1914,7 @@ module core(clk,
 	t_mrob_next_tail.is_call = (t_alloc_uop2.op == JAL) | (t_alloc_uop2.op == JALR);
 	t_mrob_next_tail.is_irq = t_alloc_uop2.op == IRQ;
 	t_mrob_next_tail.is_indirect = (t_alloc_uop2.op == JALR) | (t_alloc_uop2.op == JR);
-	t_mrob_next_tail.is_crack_lo = (t_alloc_uop2.op == CMOV_EQZ) | (t_alloc_uop2.op == CMOV_NEZ) | (t_alloc_uop2.op == CMOV_LO);
+	t_mrob_next_tail.is_crack_lo = (t_alloc_uop2.op == CMOV_LO);
 	t_mrob_next_tail.bpu_idx = t_alloc_uop2.bpu_idx;
 	t_mrob_next_tail.valid_dst = t_uop2.dst_valid;
 	t_mrob_next_tail.ldst = t_uop2.dst[4:0];
@@ -2385,8 +2385,8 @@ module core(clk,
     * passed-thru value using the predicate bit computed by the low
     * uop.  both uops architecturally target rd so rename chains them
     * through the existing intra-bundle bypass with no special cases. */
-   wire	w_dec_is_cmov = (t_dec_uop.op == CMOV_EQZ) | (t_dec_uop.op == CMOV_NEZ) | (t_dec_uop.op == CMOV_LO);
-   wire	w_dec2_is_cmov = (t_dec_uop2.op == CMOV_EQZ) | (t_dec_uop2.op == CMOV_NEZ) | (t_dec_uop2.op == CMOV_LO);
+   wire	w_dec_is_cmov = (t_dec_uop.op == CMOV_LO);
+   wire	w_dec2_is_cmov = (t_dec_uop2.op == CMOV_LO);
 
    uop_t t_dec_uop_lo, t_dec_uop_hi;
    always_comb

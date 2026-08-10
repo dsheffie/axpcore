@@ -489,8 +489,8 @@ module nu_l1d(clk,
       logic [15:0]		  t_m, m;
       logic			  b,s,w,d;
       
-      b = 	(r.op == MEM_SB || r.op == MEM_LB || r.op == MEM_LBU);
-      s = 	(r.op == MEM_SH || r.op == MEM_LH || r.op == MEM_LHU);
+      b = 	(r.op == MEM_SB || r.op == MEM_LBU);
+      s = 	(r.op == MEM_SH || r.op == MEM_LHU);
       w = 	(r.op == MEM_SW || r.op == MEM_LW );
       d	= 	(r.op == MEM_SD || r.op == MEM_LD );         
       t_m = b ? 16'h0001 :
@@ -1505,20 +1505,10 @@ module nu_l1d(clk,
 
 	
 	case(r_req2.op)
-	  MEM_LB:
-	    begin
-	       t_rsp_data2 = {{56{t_shift_2[7]}}, t_shift_2[7:0]};
-	       t_rsp_dst_valid2 = r_req2.dst_valid & t_hit_cache2;
-	    end
 	  MEM_LBU:
 	    begin
 	       t_rsp_data2 = {56'd0, t_shift_2[7:0]};	       
 	       t_rsp_dst_valid2 = r_req2.dst_valid & t_hit_cache2;	       
-	    end
-	  MEM_LH:
-	    begin
-	       t_rsp_data2 = {{48{t_shift_2[15]}}, t_shift_2[15:0]};	       
-	       t_rsp_dst_valid2 = r_req2.dst_valid & t_hit_cache2;
 	    end
 	  MEM_LHU:
 	    begin
@@ -1530,11 +1520,6 @@ module nu_l1d(clk,
 	       t_rsp_data2 = {{32{t_shift_2[31]}}, t_shift_2[31:0]};
 	       t_rsp_dst_valid2 = r_req2.dst_valid & t_hit_cache2;
 	    end
-	  MEM_LWU:
-	    begin
-	       t_rsp_data2 = {32'd0, t_shift_2[31:0]};
-	       t_rsp_dst_valid2 = r_req2.dst_valid & t_hit_cache2;
-	    end	  
 	  MEM_LD:
 	    begin
 	       t_rsp_data2 = t_shift_2[63:0];
@@ -1674,20 +1659,10 @@ module nu_l1d(clk,
 	t_store_mask = {64'd0, w_store_mask} << {r_req.addr[`LG_L1D_CL_LEN-1:0], 3'd0};
 
 	case(r_req.op)
-	  MEM_LB:
-	    begin
-	       t_rsp_data = {{56{t_shift[7]}}, t_shift[7:0]};	       
-	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
-	    end
 	  MEM_LBU:
 	    begin
 	       t_rsp_data = {56'd0, t_shift[7:0]};	       	       
 	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;	       
-	    end
-	  MEM_LH:
-	    begin
-	       t_rsp_data = {{48{t_shift[15]}}, t_shift[15:0]};	       	       
-	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
 	    end
 	  MEM_LHU:
 	    begin
@@ -1702,11 +1677,6 @@ module nu_l1d(clk,
 	       n_link_reg = {r_req.addr[63:4], 4'd0};
 	       n_link_reg_val = r_req.is_ll ? 1'b1 : r_link_reg_val;
 	    end
-	  MEM_LWU:
-	    begin
-	       t_rsp_data = {32'd0, t_shift[31:0]};	       
-	       t_rsp_dst_valid = r_req.dst_valid & t_hit_cache;
-	    end	  
 	  MEM_LD:
 	    begin
 	       t_rsp_data = t_shift[63:0];	       

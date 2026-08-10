@@ -271,12 +271,46 @@ on the slimmed tree.  l1d.sv / perfect_l1d.sv (unused alternates) now
 reference removed enums - they were already stale for alpha; left in
 place, not in the build.
 
+## dead-code sweep, stage 2 (riscv arms + enums)
+
+gone : ~58 riscv-only opcode_t enums and ~95 exec arms across both
+pipes (riscv 2-reg branches, zicond, CMOV_EQZ/NEZ - the crack keys on
+CMOV_LO alone now, W-ops, rotates, min/max, rev8/orcb, UW/zba
+leftovers incl SH1ADD, imm-form twins, auipc/lui, LB/LH/LWU), the
+support wires they owned (w_srcB_is_zero, bswap generates, the
+W-shift source muxes), and the MEM_LB/LH/LWU l1d response arms in
+both cache ports.  SRL/SRA/SLL stay (alpha shifts), ADDI/ANDI stay
+(lda/ldah/amask), SH2ADD/SH3ADD stay (s4addq/s8addq).
+
+- divider question resolved : alpha has NO architected divide, so the
+  restored-nu_divider idea was reverted mid-flight; the shim's
+  shift-subtract helpers in the division ABI remain the story
+- gotcha : when the RTL shrinks, verilator emits fewer split .cpp
+  files - stale obj_dir objects then double-link (the Makefile globs
+  obj_dir/*.o).  rm -rf obj_dir on big RTL diets
+
+still riscv in the tree (stage 3) : the CSR/priv block in exec +
+core's WRITE_CSRS/trap states + csr_t (needed until the alpha
+privilege model lands - RDCYCLE/MONITOR/FENCEI thread through it),
+BREAK/ECALL-family enums, interpret.cc/top.cc riscv paths, the stale
+l1d.sv/l2.sv/perfect_* alternates.
+
+## FPU roadmap note (from dsheffie)
+
+the mips-project FPU blocks come in eventually.  VAX modes (opcode
+0x15 FLTV group) over the same datapath : F/G/D formats with biases
+128/1024/128, NO denorm/inf/nan, sign=1&exp=0 = reserved operand
+trap, ties-away-from-zero rounding, PDP-11 16-bit word swap in
+LDF/LDG/STF/STG (plus exponent remap into the register format), D
+via conversion only (CVTDG/CVTGD, G-precision arithmetic).  G is
+IEEE-double-shaped with bias off by one - real EVs shared the
+datapath and muxed unpack/pack/rounding by mode, which is exactly
+the plan for the mips FPU port.
+
 ## next
 
-1. dead-code sweep stage 2 : riscv-only ALU arms + enums (W-ops,
-   rotates, min/max, zicond, riscv branches, CMOV_EQZ/NEZ, LB/LH/LWU
-   + MEM_LB/LH/LWU in nu_l1d), then the CSR/priv block in exec +
-   core's WRITE_CSRS interplay, then interpret.cc riscv paths
+1. sweep stage 3 : the CSR/priv block (couples to the privilege-model
+   decision - PALcode vs hardware), interpret.cc riscv paths
 2. cheaper monitor path (skip the L2 walk for syscalls?)
 3. r9999 also has formal_l1d_fwd - port when the l1d gets attention
 2. wire the alpha ISS into the store queue so wr_log store compare

@@ -1489,7 +1489,14 @@ module core(clk,
 	  begin
 	     for(logic [`LG_PRF_ENTRIES-1:0] i_rat = 'd0; i_rat < 'd32; i_rat = i_rat + 'd1)
 	       begin
-		  r_alloc_rat[i_rat[4:0]] <= i_rat;
+		  /* the register file hardwires reads of phys 0 to
+		   * zero.  alpha's zero register is r31, so map
+		   * r31 -> phys 0 (never renamed, never freed) and
+		   * r0 -> phys 31 (renames normally).  without this
+		   * swap phys 0 eventually gets freed, reallocated,
+		   * and reads back 0 - found by csmith */
+		  r_alloc_rat[i_rat[4:0]] <= (i_rat == 'd31) ? 'd0 :
+					     (i_rat == 'd0) ? 'd31 : i_rat;
 	       end
 	  end
 	else if(t_rat_copy)
@@ -1518,7 +1525,8 @@ module core(clk,
 	  begin
 	     for(logic [`LG_PRF_ENTRIES-1:0] i_rat = 'd0; i_rat < 'd32; i_rat = i_rat + 'd1)
 	       begin
-		  r_retire_rat[i_rat[4:0]] <= i_rat;
+		  r_retire_rat[i_rat[4:0]] <= (i_rat == 'd31) ? 'd0 :
+					      (i_rat == 'd0) ? 'd31 : i_rat;
 	       end
 	  end
 	else 
@@ -2337,7 +2345,6 @@ module core(clk,
     */
       
    
-`ifdef ALPHA
    decode_alpha dec0
      (
       .insn(insn.insn_bytes),
@@ -2371,45 +2378,6 @@ module core(clk,
       .syscall_emu(syscall_emu),
       .uop(t_dec_uop2)
       );
-`else
-   decode_riscv dec0 
-     (
-      .mode64(r_mode64),
-      .priv(w_priv),
-      .insn(insn.insn_bytes),
-      .page_fault(insn.page_fault),
-      .bad_page_permissions(insn.bad_page_permissions),
-      .irq(w_any_irq),
-      .pc(insn.pc), 
-      .insn_pred(insn.pred), 
-      .bpu_idx(insn.bpu_idx),
-      .insn_pred_target(insn.pred_target),
-`ifdef ENABLE_CYCLE_ACCOUNTING
-      .fetch_cycle(insn.fetch_cycle),
-`endif
-      .syscall_emu(syscall_emu),		      
-      .uop(t_dec_uop)
-      );
-   
-   decode_riscv dec1 
-     (	
-	.mode64(r_mode64),
-	.priv(w_priv),
-	.insn(insn_two.insn_bytes),
-	.page_fault(insn_two.page_fault),
-	.bad_page_permissions(insn_two.bad_page_permissions),	
-	.irq(w_any_irq),	
-	.pc(insn_two.pc), 
-	.insn_pred(insn_two.pred), 
-	.bpu_idx(insn_two.bpu_idx),
-	.insn_pred_target(insn_two.pred_target),
-`ifdef ENABLE_CYCLE_ACCOUNTING
-	.fetch_cycle(insn_two.fetch_cycle),
-`endif
-	.syscall_emu(syscall_emu),	
-	.uop(t_dec_uop2)
-	);
-`endif // !`ifdef ALPHA
 
    /* cmov.eqz/cmov.nez read their own destination - crack into two
     * 2-source uops at dispatch.  the low uop tests rs1 and passes the

@@ -177,7 +177,28 @@ libgcc's versions use the FPU).  `./csmith_rtl.sh N seed0`.
 **first 30-seed batch : 19 pass, 8 fail, 0 iss-vs-host fails.**
 every failure is deterministic and sits in csmith's crc32 kernel.
 
-### the open bug - status of the hunt
+### the bug : FOUND AND FIXED (all 8 seeds now pass, 27/27 batch)
+
+root cause : **rf6r3w hardwires reads of phys reg 0 to zero** - the
+rv64 x0 sink, safe there because arch x0 maps to phys 0 forever and
+that tag is never freed.  alpha's r0 (v0) is a real register : its
+reset mapping (phys 0) gets renamed away, freed, and eventually
+REALLOCATED - the new owner's writes land in the array but every
+read short-circuits to 0.  rare (only when the free list hands out
+index 0), deterministic, value always 0 - matched every signature.
+
+fix : under `ALPHA the reset RATs swap r31 <-> r0 mappings : arch
+r31 (alpha's zero reg) -> phys 0, never renamed so never freed, and
+the read shortcut becomes exactly the r31-zero implementation; arch
+r0 -> phys 31, renames normally (no read shortcut on tag 31).
+
+found with cycle-windowed $display instrumentation (operand tags +
+values + fwd selects + all prf writes) : the log showed extbl
+renamed to dst tag 0, result 0x2e computed, and the consumer reading
+[0]=0 with no intervening writer - then the grep for ptr-0 special
+cases in rf6r3w.
+
+### the hunt (kept for methodology)
 
 symptom (seed 2016, `csmith_alpha_rtl/rtlfail_2016.c`) : `extbl
 a0,0x6,t3` retires 0x2e (RETIRE DATA PROVES THE EXEC RESULT AND PRF
@@ -215,10 +236,28 @@ next moves :
   (perf binaries co-sim checked now) ; end-of-run memdiff dump (first
   16 differing qwords - beware post-abort artifacts)
 
+## all-AXP tree + formal zero-register proof
+
+- every `` `ALPHA `` ifdef is gone : the tree builds only the alpha
+  core (decode_riscv.sv dropped from SV_SRC, riscv branches deleted
+  from predecode/l1i/nu_l1d/core).  the rv64 regression flip-back no
+  longer exists by design - VMS or bust
+- the phys-0 fix is unconditional : reset RATs map r31 -> phys 0
+  (never renamed/freed; rf6r3w's ptr-0 read shortcut IS the r31 zero)
+  and r0 -> phys 31
+- **formal/ (ported from r9999)** : formal_decode.sv +
+  run_decode_formal.sh prove `dst_valid |-> dst[4:0] != 31` over all
+  2^32 insns x all inputs (sv2v + yosys sat, UNSAT on `bad`, with a
+  non-vacuity sanity check).  this is the decode invariant that keeps
+  the zero register zero.  note : yosys needs `read_verilog -sv`
+  (sv2v keeps size casts)
+
 ## next
 
-1. FST wave window -> root-cause the phys-reg-reads-0 bug
-2. cheaper monitor path (skip the L2 walk for syscalls?)
+1. cheaper monitor path (skip the L2 walk for syscalls?)
+2. r9999 also has formal_l1d_fwd - port when the l1d gets attention
+3. dead-code sweep : uop.vh riscv enums, div/AMO exec arms, CSR file,
+   interpret.cc riscv paths (top.cc still links them harmlessly)
 2. wire the alpha ISS into the store queue so wr_log store compare
    works; directed ldl_l/stl_c + stq_u co-sim tests
 3. bigger co-sim runs : csmith with a freestanding print shim (glibc

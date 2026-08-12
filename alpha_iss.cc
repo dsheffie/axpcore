@@ -90,9 +90,39 @@ static bool load_alpha_elf(const char *fn, alpha_state_t *s) {
   return true;
 }
 
+/* load a PAL ELF : copy its PT_LOAD segments into the flat image and
+ * set PAL_BASE to the lowest loaded vaddr (offset 0 of the PAL image
+ * is the entry-point table).  the PAL image is linked at a fixed
+ * physical base below the user text. */
+static bool load_pal_image(const char *fn, alpha_state_t *s) {
+  int fd = open(fn, O_RDONLY);
+  if(fd < 0) {
+    fprintf(stderr, "alpha_iss: cannot open pal image %s\n", fn);
+    return false;
+  }
+  struct stat st;
+  fstat(fd, &st);
+  char *buf = static_cast<char*>(mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+  close(fd);
+  const Elf64_Ehdr *eh = reinterpret_cast<const Elf64_Ehdr*>(buf);
+  const Elf64_Phdr *ph = reinterpret_cast<const Elf64_Phdr*>(buf + eh->e_phoff);
+  for(int i = 0; i < eh->e_phnum; i++) {
+    if(ph[i].p_type != PT_LOAD) {
+      continue;
+    }
+    memcpy(s->mem + ph[i].p_vaddr, buf + ph[i].p_offset, ph[i].p_filesz);
+  }
+  /* PAL_BASE is the reset vector = the PAL image entry point (the
+   * PT_LOAD vaddr can be 0 since it covers the ELF headers) */
+  s->ipr[IPR_PAL_BASE] = eh->e_entry;
+  munmap(buf, st.st_size);
+  s->pal_loaded = true;
+  return true;
+}
+
 int main(int argc, char *argv[]) {
   namespace po = boost::program_options;
-  std::string binary;
+  std::string binary, palimage;
   uint64_t maxicnt = ~0UL;
   bool dump_icnt = false;
   try {
@@ -100,6 +130,7 @@ int main(int argc, char *argv[]) {
     desc.add_options()
       ("help", "print help")
       ("file,f", po::value<std::string>(&binary), "alpha binary")
+      ("palcode,p", po::value<std::string>(&palimage), "PAL image (ELF) : enables real PAL dispatch")
       ("maxicnt,m", po::value<uint64_t>(&maxicnt)->default_value(~0UL), "maximum icnt")
       ("icnt,i", po::value<bool>(&dump_icnt)->default_value(false), "report icnt at exit");
     po::variables_map vm;
@@ -124,6 +155,9 @@ int main(int argc, char *argv[]) {
     return -1;
   }
   if(!load_alpha_elf(binary.c_str(), s)) {
+    return -1;
+  }
+  if(!palimage.empty() && !load_pal_image(palimage.c_str(), s)) {
     return -1;
   }
   s->maxicnt = maxicnt;

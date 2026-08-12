@@ -47,6 +47,73 @@ functions, 64-byte slots :
 privileged CALL_PAL from user mode -> OPCDEC entry.  >128 functions
 overflow into the OPCDEC handler by convention.
 
+**The five reserved PAL opcodes - CONFIRMED against the real 21064
+HRM** (Digital Semiconductor 21064/21064A HRM, section 2.11.1 table
+2-5 + section 4.8; text extracted from the bitsavers/open-watcom
+scan).  axpcore's opcode assignments are the real chip's, verbatim:
+
+| opcode | mnemonic | 21064 operation |
+|--------|----------|-----------------|
+| 0x19 (PAL19) | HW_MFPR | Ra <- IPR[index] ; **Ra and Rb must be identical** |
+| 0x1B (PAL1B) | HW_LD | Ra <- mem[Rb + sext(disp)] |
+| 0x1D (PAL1D) | HW_MTPR | IPR[index] <- Ra (=Rb) |
+| 0x1E (PAL1E) | HW_REI | VPC <- EXC_ADDR & ~3 ; PALmode <- EXC_ADDR<0> |
+| 0x1F (PAL1F) | HW_ST | mem[Rb + sext(disp)] <- Ra |
+
+these produce OPCDEC outside PALmode - matches our gate exactly.
+field layouts we now follow (section 4.8, tables 4-6/4-8/4-9):
+- **HW_MFPR/HW_MTPR** : Ra[25:21], Rb[20:16] (must equal Ra), then
+  box-routing (PAL/ABX/IBX) + INDEX low bits.  axpcore keeps a FLAT
+  chip-private IPR index (the real chip's box-routing is per-chip
+  anyway - decision 4) and sets Rb=Ra for encode-correctness.
+- **HW_LD/HW_ST** : Ra[25:21] data, Rb[20:16] base, control H/L/W
+  [15:13], **Q bit [12]** (1=quadword/0=longword), **12-bit signed
+  disp [11:0]**; ea = (Rb + sext(disp)) & ~(Q?7:3) (natural align).
+  axpcore now implements exactly this (was a 16-bit-disp shortcut).
+- **HW_REI** : bits[15:14] = branch-prediction hint; bit[15] set pops
+  the JSR return stack.  VPC/PALmode from EXC_ADDR as above.
+
+bonus: the same opcode grid (table 2-4) confirms the VAX FP groups
+FLTV=0x15 / FLTI=0x16 / FLTL=0x17 for the eventual FPU port.
+
+sources : Digital Semiconductor Alpha 21064/21064A HRM
+(open-watcom.github.io/.../21064_64a_hrm.pdf) ; PALcode System Design
+Guide (archive.org dec-palcode_dsgn_gde, our in-repo pdf).
+
+**The real 21064 IPR set** (HRM chapter 5 + access table 4-7).  MFPR/
+MTPR select an IPR by a box bit (PAL / ABX=Abox / IBX=Ibox) plus an
+INDEX; axpcore keeps a flat chip-private index instead.  the full
+list, and what we actually need :
+
+Ibox (IBX) : EXC_ADDR(4), PS(9), PAL_BASE(11) - we already have these;
+EXC_SUM(10) arith-trap summary, SIRR(13)/HIRR(12)/ASTRR(14) interrupt
+requests + HIER(16)/SIER(17)/ASTER(18) enables (phase 5); TB_TAG(0)/
+ITB_PTE(1)/ITB_PTE_TEMP(3) ITB fill + ITBZAP(6)/ITBASM(7)/ITBIS(8)
+invalidates (phase 4); ICCSR(2) icache+perf, SL_RCV(5)/SL_CLR(19)/
+SL_XMIT(22) console UART (our htif subs).
+
+Abox (ABX) : DTB_PTE(2)/DTB_PTE_TEMP(3) DTB fill, MM_CSR(4) fault
+status (opcode/RW/type), VA(5) fault address, TB_CTL(0) page-size,
+DTBZAP(6)/DTBASM(7)/DTBIS(8) invalidates (all phase 4); CC(16)/
+CC_CTL(17) cycle counter (RPCC backing - maps to our icnt);
+ALT_MODE(15) HW_LD/ST access mode; ABOX_CTL(14)/BIU_CTL(18) +
+BIU_ADDR/BIU_STAT/DC_STAT/FILL_ADDR/FILL_SYNDROME/BC_TAG (chip glue /
+machine-check only); FLUSH_IC(21)/FLUSH_IC_ASM(23) icache flush (our
+FENCEI subs).
+
+PAL : PAL_TEMP[31:0] (INDEX 31-0) - 32 scratch registers, the handler
+working set.  Lock registers (5.5) back LDx_L/STx_C - already modeled
+(lock_valid/lock_addr in ISS, r_link_reg in RTL).
+
+**IPR-design correction found here** : the 21064 has NO PTBR, NO
+VPTPTR, NO WHAMI IPR.  page-table base + virtual-page-table pointer
+are SOFTWARE conventions kept in PAL_TEMP by the OSF PALcode (TB fill
+is pure PAL software: physical HW_LD the PTE, then write TB_TAG +
+xTB_PTE); WHAMI is a system/chip-specific value, not a 21064 IPR.
+axpcore's phase-1 enum invented PTBR/VPTPTR/WHAMI - **drop them in
+phase 4** and let PAL park those values in PAL_TEMP, matching real
+OSF PAL.
+
 **IPRs** (2.7) : reached only from PALmode via the reserved opcodes,
 plus PAL_TEMP scratch registers.  the manual's issue-rule chapter
 (2.5/2.6, the pvc tool) exists because real chips had *uninterlocked*
@@ -94,16 +161,46 @@ for the serial port initially.
 
 ## the step-by-step plan
 
-### phase 1 - ISS grows PALmode (no RTL, no PAL software yet)
-- alpha_state_t: palmode bit, ipr[] file, PS/PAL_BASE/EXC_ADDR/...
-- decode+execute the five hw_* opcodes (EV4 encodings, OPCDEC if not
-  palmode); CALL_PAL + every currently-fatal event (unaligned,
-  OPCDEC, arith) becomes: EXC_ADDR <- pc, palmode <- 1,
-  pc <- PAL_BASE + offset (when a PAL image is loaded; without one,
-  keep today's behavior)
-- driver: `--palcode <image>` flag loads a PAL binary at PAL_BASE
-- exit criteria: a toy PAL image (gas -m21064) that fields callsys ->
-  htif print -> hw_rei, co-existing with all current tests
+### phase 1 - ISS grows PALmode - **DONE**
+- alpha_state_t grew: pal_loaded, palmode, ipr[64] (IPR_* enum in
+  alpha_interp.hh); enter_pal() helper does the save-EXC_ADDR /
+  set-palmode / redirect dance
+- the five reserved PAL opcodes execute (OPCDEC if not palmode):
+  0x19 hw_mfpr, 0x1d hw_mtpr, 0x1b hw_ldq, 0x1f hw_stq, 0x1e hw_rei.
+  hw_rei restores pc from EXC_ADDR, palmode from EXC_ADDR<0>
+- CALL_PAL vectors when pal_loaded (func<7> -> region, func<5:0> ->
+  64B slot); OPCDEC/unimplemented ops vector to PAL_OPCDEC.  without a
+  PAL image every path is byte-for-byte the old behavior
+- alpha_iss: `-p/--palcode <elf>` loads the image; PAL_BASE = e_entry
+  (the PT_LOAD vaddr is 0 since it covers the ELF headers - use the
+  entry, not the segment base)
+- pal/: pal_macros.h (hw_* as .long, IPR/offset .equ constants),
+  toy_pal.S (reset/OPCDEC/pal_add-0x91/pal_memtest-0x92), phase1_test.c
+- exit criteria MET: phase1_test built -DPAL_MODE=1 (results via PAL)
+  vs =0 (native) produce byte-identical output; all existing tests +
+  RTL cosim + csmith unchanged (pal_loaded defaults false)
+
+**phase-1 gotchas (paid for, recorded):**
+- this binutils gates the named hw_* mnemonics off entirely - emit the
+  reserved PAL opcodes as .long; objdump still prints pal19/1b/1d/1e/1f
+- gas-alpha reserves `.set` for mode directives (noat/reorder) - use
+  `.equ NAME, val` for symbol constants
+- **0xb0 (htif) stays inline even under PAL dispatch** - it's the
+  substrate's own console/co-sim transport (the manual's putc console
+  service), not a guest-visible PAL call
+- **PAL must save/restore every guest register it touches** through
+  PAL_TEMP - the first toy OPCDEC handler clobbered r1 and corrupted
+  the guest's .text via a mis-based store; the ISS modeled the clobber
+  faithfully and the corruption pointed straight at the bug
+
+build the toy PAL + test:
+```
+alpha-linux-gnu-gcc-10 -c -x assembler-with-cpp pal/toy_pal.S -o pal/toy_pal.o
+alpha-linux-gnu-ld -Ttext=0x10000 pal/toy_pal.o -o pal/toy_pal
+AF="-mcpu=ev4 -mbwx -O2 -nostdlib -nostartfiles -static -Wl,-Ttext-segment=0x20000000"
+alpha-linux-gnu-gcc-10 $AF -DPAL_MODE=1 alpha_start.S pal/phase1_test.c -o pal/phase1_pal
+./alpha_iss -f pal/phase1_pal -p pal/toy_pal
+```
 
 ### phase 2 - real PAL software, ISS-only
 - write axp-pal.S/C in-repo (structure cribbed from qemu-palcode,

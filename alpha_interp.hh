@@ -4,6 +4,39 @@
 #include <cstdint>
 #include <cstring>
 
+/* implementation-private IPR numbers (substrate is chip-private by
+ * design - see PALCODE.md decision 4).  reached only via hw_mfpr/
+ * hw_mtpr in palmode.  PAL_TEMP scratch is a contiguous block. */
+enum {
+  IPR_PS        = 0,  /* processor status : mode bit + IPL */
+  IPR_EXC_ADDR  = 1,  /* saved PC on PAL entry ; low bit = old palmode */
+  IPR_PAL_BASE  = 2,  /* base of the PAL entry-point table */
+  IPR_PTBR      = 3,  /* page table base (phase 4) */
+  IPR_VPTPTR    = 4,  /* virtual page table pointer (phase 4) */
+  IPR_WHAMI     = 6,  /* processor id */
+  IPR_SIRR      = 7,  /* software interrupt request (phase 5) */
+  IPR_EXC_SUM   = 8,  /* arithmetic/exception summary */
+  IPR_PAL_TEMP  = 16, /* IPR_PAL_TEMP .. IPR_PAL_TEMP+31 : scratch */
+};
+
+/* EV4-family PAL entry offsets from PAL_BASE (manual figure 2-1) */
+enum {
+  PAL_RESET        = 0x0000,
+  PAL_MCHK         = 0x0020,
+  PAL_ARITH        = 0x0060,
+  PAL_INTERRUPT    = 0x00E0,
+  PAL_DSTREAM_ERR  = 0x01E0,
+  PAL_ITB_MISS     = 0x03E0,
+  PAL_IACCVIO      = 0x07E0,
+  PAL_DTB_MISS_N   = 0x08E0,
+  PAL_DTB_MISS_P   = 0x09E0,
+  PAL_UNALIGN      = 0x11E0,
+  PAL_OPCDEC       = 0x13E0,
+  PAL_FEN          = 0x17E0,
+  PAL_CALLPAL_PRIV = 0x2000,
+  PAL_CALLPAL_UNPRIV = 0x3000,
+};
+
 /* user-mode alpha (EV4 integer subset + BWX) interpreter state.
  * mirrors the shape of the rv64 state_t so the co-sim harness port is
  * mechanical : pc + 32 gprs (r31 reads as zero) + flat memory image. */
@@ -27,6 +60,16 @@ struct alpha_state_t {
   bool did_rpcc; /* last insn read the cycle counter - checker accepts the RTL value */
   /* co-sim store log hook : null when standalone */
   void (*log_store)(uint64_t pc, uint64_t addr, uint64_t data);
+
+  /* PALmode (phase 1).  pal_loaded gates real PAL dispatch : when a
+   * PAL image has been loaded, CALL_PAL and fatal events vector to
+   * PAL_BASE + offset instead of the inline htif/host fast path, and
+   * the five reserved PAL opcodes (0x19/0x1b/0x1d/0x1e/0x1f) are
+   * legal in palmode.  when it is false the ISS behaves exactly as
+   * the user-mode interpreter always has. */
+  bool pal_loaded;
+  bool palmode;
+  uint64_t ipr[64]; /* implementation-private IPR file (see IPR_* below) */
 
   /* minimal fp state : alpha has no integer divide - libgcc's __divqu
    * and friends do int division THROUGH the fpu, so running any

@@ -326,6 +326,39 @@ the plan for the mips FPU port.
 5. call_pal rduniq/wruniq for TLS; then the privilege model decision
    (PALcode vs retargeted walker)
 
+## FPU : full IEEE via Berkeley SoftFloat (done)
+
+the ISS FP is now Berkeley SoftFloat (vendored softfloat/, 8086-SSE
+IEEE spec), replacing the old host-double + fesetround hack.  wins:
+deterministic, host-independent, explicit per-op rounding, and it has
+round_near_maxMag = VAX ties-away rounding for the eventual VAX path.
+
+- alpha_fpu.hh : softfloat glue + Alpha register-format helpers.  S
+  values live in registers as the double they represent (f32_to_f64 /
+  f64_to_f32 are exactly Alpha's LDS expand / STS narrow), T values
+  are raw doubles, Q integers are plain int64.
+- implemented (opcodes 0x14 ITFP, 0x16 FLTI, 0x17 FLTL, 0x22/23/26/27
+  loads/stores, 0x1c FTOIx, fp branches) : adds/subs/muls/divs,
+  addt/subt/mult/divt, sqrts/sqrtt, cmptun/eq/lt/le, cvtts/cvttq/
+  cvtqs/cvtqt/cvtst, cpys/cpysn/cpyse, fcmov*, mt/mf_fpcr, cvtlq/cvtql,
+  itofs/itoft + ftois/ftoit (FIX register moves), all fp branches.
+- rounding : decoded from instruction bits <12:11> (func<7:6>),
+  dynamic (/D) via FPCR<59:58>, set into softfloat per op.
+- **validated bit-exact against qemu-alpha** : fptest.c (arith, sqrt,
+  all converts, FIX moves, 5000-iter sqrt chain) is byte-identical,
+  and 8/8 csmith --float (-mcpu=ev6 codegen) programs match qemu.
+  RTL cosim + integer csmith still green (FP only reached via the
+  division helpers there).
+
+**VAX FLTV (0x15) is stubbed** (report_unimplemented).  softfloat has
+no VAX formats; the path is VAX<->IEEE conversion (rebias F=128/
+G=1024, PDP-11 16-bit word swap in memory, ties-away rounding,
+reserved-operand traps) wrapped around softfloat.  deferred - Linux
+userland is IEEE.  this is the FPU piece FIX/full-EV6 does NOT need.
+
+build : `make alpha_iss` (standalone engine) or `make` (rv64_core
+co-sim); both link softfloat.a (auto-built via the SF_LIB rule).
+
 ## conventions
 
 - misaligned access: EV4 traps on any misalignment; ISS currently does

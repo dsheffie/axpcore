@@ -35,7 +35,9 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 OPT = -O3 -g -std=c++14 -fomit-frame-pointer
-CXXFLAGS = -std=c++11 -g  $(OPT) -I$(VERILATOR_INC) -I$(VERILATOR_DPI_INC) #-DLINUX_SYSCALL_EMULATION=1
+SF_DIR = softfloat/build/Linux-x86_64-GCC
+SF_LIB = $(SF_DIR)/softfloat.a
+CXXFLAGS = -std=c++11 -g  $(OPT) -I$(VERILATOR_INC) -I$(VERILATOR_DPI_INC) -I$(SF_DIR) -Isoftfloat/source/include #-DLINUX_SYSCALL_EMULATION=1
 LIBS =  $(EXTRA_LD) -lpthread
 
 DEP = $(OBJ:.o=.d)
@@ -46,8 +48,15 @@ EXE = rv64_core
 
 all: $(EXE)
 
-$(EXE) : $(OBJ) obj_dir/Vcore_l1d_l1i__ALL.a
-	$(CXX) $(CXXFLAGS) $(OBJ) obj_dir/*.o $(LIBS) -o $(EXE)
+$(SF_LIB):
+	$(MAKE) -C $(SF_DIR)
+
+$(EXE) : $(OBJ) obj_dir/Vcore_l1d_l1i__ALL.a $(SF_LIB)
+	$(CXX) $(CXXFLAGS) $(OBJ) obj_dir/*.o $(SF_LIB) $(LIBS) -o $(EXE)
+
+# standalone alpha ISS engine (no RTL) - the OS-boot scoping vehicle
+alpha_iss : alpha_iss.cc alpha_interp.cc alpha_interp.hh alpha_fpu.hh $(SF_LIB)
+	$(CXX) -O2 -std=c++17 -I$(SF_DIR) -Isoftfloat/source/include -o alpha_iss alpha_iss.cc alpha_interp.cc $(SF_LIB) -lboost_program_options
 
 top.o: top.cc obj_dir/Vcore_l1d_l1i__ALL.a
 	$(CXX) -MMD $(CXXFLAGS) -Iobj_dir -c $< 

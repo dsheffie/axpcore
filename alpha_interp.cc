@@ -3,10 +3,9 @@
  * 0x83 (callsys) proxies linux/alpha syscalls so the same binary runs
  * under qemu-alpha for diff-testing. */
 #include "alpha_interp.hh"
+#include "alpha_fpu.hh"
 #include <cstdio>
 #include <cstdlib>
-#include <cfenv>
-#include <cmath>
 #include <unistd.h>
 
 static const bool g_trace = getenv("AXP_TRACE") != nullptr;
@@ -125,52 +124,10 @@ static void handle_callsys(alpha_state_t *s) {
     }
 }
 
-static inline double as_double(uint64_t x) {
-  double d;
-  memcpy(&d, &x, 8);
-  return d;
-}
-
-static inline uint64_t as_u64(double d) {
-  uint64_t x;
-  memcpy(&x, &d, 8);
-  return x;
-}
-
-/* S-format memory single -> register T-format (the MAP_S widening) */
-static inline uint64_t map_s(uint32_t x) {
-  uint64_t sign = (x >> 31) & 1;
-  uint64_t exp = (x >> 23) & 0xff;
-  uint64_t frac = x & 0x7fffff;
-  uint64_t e11;
-  if(exp == 0xff) {
-    e11 = 0x7ff;
-  }
-  else if(exp == 0) {
-    e11 = 0;
-  }
-  else {
-    e11 = exp + (1023 - 127);
-  }
-  return (sign << 63) | (e11 << 52) | (frac << 29);
-}
-
-/* alpha fp rounding qualifier (func bits 7:6) -> host rounding mode */
-static inline int alpha_rnd(uint32_t rnd, uint64_t fpcr) {
-  switch(rnd)
-    {
-    case 0: return FE_TOWARDZERO; /* /c chopped */
-    case 1: return FE_DOWNWARD; /* /m minus */
-    case 2: return FE_TONEAREST; /* normal */
-    default: /* /d dynamic : FPCR<59:58> */
-      switch((fpcr >> 58) & 3)
-	{
-	case 0: return FE_TOWARDZERO;
-	case 1: return FE_DOWNWARD;
-	case 2: return FE_TONEAREST;
-	default: return FE_UPWARD;
-	}
-    }
+/* the FP zero-value bit test used by FCMOVxx and the FP branches :
+ * +0.0 and -0.0 both count as zero (only sign differs). */
+static inline bool fp_is_zero(uint64_t b) {
+  return (b & ~(1UL << 63)) == 0;
 }
 
 /* call_pal 0xb0 : the htif escape used by RTL co-sim binaries.
@@ -217,6 +174,15 @@ static void handle_htif_monitor(alpha_state_t *s) {
   s->store64(s->fromhost_addr, 1);
 }
 
+/* enter PALmode at PAL_BASE + off : save return PC (low bit carries
+ * the mode being left, per the architected HW_REI convention), switch
+ * to palmode, redirect fetch.  returns the new pc. */
+static uint64_t enter_pal(alpha_state_t *s, uint64_t pc, uint64_t off) {
+  s->ipr[IPR_EXC_ADDR] = (pc & ~3UL) | (s->palmode ? 1 : 0);
+  s->palmode = true;
+  return s->ipr[IPR_PAL_BASE] + off;
+}
+
 void execAlpha(alpha_state_t *s) {
   alpha_t m;
   uint64_t pc = s->pc;
@@ -233,6 +199,18 @@ void execAlpha(alpha_state_t *s) {
   switch(opcode)
     {
     case 0x00: /* CALL_PAL */
+      /* 0xb0 is the substrate's own console / co-sim transport (the
+       * manual's putc console-service role), not a guest-visible PAL
+       * call - it stays inline even under real PAL dispatch. */
+      if(s->pal_loaded && (m.p.func != 0xb0)) {
+	/* real dispatch : func<7> selects priv/unpriv region, func<5:0>
+	 * indexes 64-byte slots.  privileged call from non-pal user
+	 * mode would OPCDEC on hardware; PS mode checks land in phase 2. */
+	uint32_t func = m.p.func;
+	uint64_t region = (func & 0x80) ? PAL_CALLPAL_UNPRIV : PAL_CALLPAL_PRIV;
+	npc = enter_pal(s, npc, region + ((func & 0x3f) << 6));
+	break;
+      }
       switch(m.p.func)
 	{
 	case 0x00: /* halt */
@@ -257,6 +235,54 @@ void execAlpha(alpha_state_t *s) {
 		  m.p.func, pc);
 	  exit(-1);
 	}
+      break;
+
+    case 0x19: /* hw_mfpr (pal19) : Ra <- IPR[disp<7:0>] */
+      if(!s->palmode) {
+	goto opcdec;
+      }
+      s->gpr[m.m.ra] = s->ipr[m.m.disp & 0x3f];
+      break;
+    case 0x1d: /* hw_mtpr (pal1d) : IPR[disp<7:0>] <- Ra */
+      if(!s->palmode) {
+	goto opcdec;
+      }
+      s->ipr[m.m.disp & 0x3f] = s->gpr[m.m.ra];
+      break;
+    case 0x1b: { /* hw_ld (pal1b) : Ra <- phys[Rb + sext12(disp)]
+		  * 21064 format : Q bit [12] = quadword/longword, disp
+		  * [11:0], address naturally aligned (mask low 2/3 bits).
+		  * physical only in axpcore (no translation yet). */
+      if(!s->palmode) {
+	goto opcdec;
+      }
+      bool qw = (m.raw >> 12) & 1;
+      int64_t disp = (static_cast<int64_t>(m.raw & 0xfff) << 52) >> 52;
+      uint64_t ea = (s->gpr[m.m.rb] + disp) & ~(qw ? 7UL : 3UL);
+      s->gpr[m.m.ra] = qw ? s->load64(ea) : sext32(s->load32(ea));
+      break;
+    }
+    case 0x1f: { /* hw_st (pal1f) : phys[Rb + sext12(disp)] <- Ra */
+      if(!s->palmode) {
+	goto opcdec;
+      }
+      bool qw = (m.raw >> 12) & 1;
+      int64_t disp = (static_cast<int64_t>(m.raw & 0xfff) << 52) >> 52;
+      uint64_t ea = (s->gpr[m.m.rb] + disp) & ~(qw ? 7UL : 3UL);
+      if(qw) {
+	s->store64(ea, s->gpr[m.m.ra]);
+      }
+      else {
+	s->store32(ea, s->gpr[m.m.ra]);
+      }
+      break;
+    }
+    case 0x1e: /* hw_rei (pal1e) : return from PAL */
+      if(!s->palmode) {
+	goto opcdec;
+      }
+      npc = s->ipr[IPR_EXC_ADDR] & ~3UL;
+      s->palmode = (s->ipr[IPR_EXC_ADDR] & 1) != 0;
       break;
 
     case 0x08: /* lda */
@@ -293,20 +319,17 @@ void execAlpha(alpha_state_t *s) {
       s->store64((s->gpr[m.m.rb] + sext16(m.m.disp)) & ~7UL, s->gpr[m.m.ra]);
       break;
 
-    case 0x22: /* lds : S memory format widens to register T format */
-      s->fpr[m.m.ra] = map_s(s->load32(s->gpr[m.m.rb] + sext16(m.m.disp)));
+    case 0x22: /* lds : S memory single -> register format (expand) */
+      s->fpr[m.m.ra] = sf_s_to_reg(sf_f32(s->load32(s->gpr[m.m.rb] + sext16(m.m.disp))));
       s->fpr[31] = 0;
       break;
     case 0x23: /* ldt */
       s->fpr[m.m.ra] = s->load64(s->gpr[m.m.rb] + sext16(m.m.disp));
       s->fpr[31] = 0;
       break;
-    case 0x26: { /* sts */
-      uint64_t v = s->fpr[m.m.ra];
-      s->store32(s->gpr[m.m.rb] + sext16(m.m.disp),
-		 ((v >> 63) << 31) | ((v >> 29) & 0x7fffffffUL));
+    case 0x26: /* sts : register format -> S memory single (narrow) */
+      s->store32(s->gpr[m.m.rb] + sext16(m.m.disp), sf_reg_to_s(s->fpr[m.m.ra]).v);
       break;
-    }
     case 0x27: /* stt */
       s->store64(s->gpr[m.m.rb] + sext16(m.m.disp), s->fpr[m.m.ra]);
       break;
@@ -578,79 +601,128 @@ void execAlpha(alpha_state_t *s) {
       break;
     }
 
-    case 0x16: { /* FLTI : ieee arithmetic.  trap qualifiers (func<10:8>)
-		  * are ignored, rounding qualifier honored via fenv */
-      double fa = as_double(s->fpr[m.f.ra]);
-      double fb = as_double(s->fpr[m.f.rb]);
-      int64_t vb = static_cast<int64_t>(s->fpr[m.f.rb]);
+    case 0x14: { /* ITFP : integer->fp moves (FIX) + sqrt */
+      softfloat_exceptionFlags = 0;
+      softfloat_roundingMode = alpha_sf_round(m.f.func, s->fpcr);
       uint32_t fn = m.f.func & 0x3f;
       uint64_t rc = 0;
-      fesetround(alpha_rnd((m.f.func >> 6) & 3, s->fpcr));
+      bool ok = true;
       switch(fn)
 	{
-	case 0x00: /* adds */
-	  rc = as_u64(static_cast<double>(static_cast<float>(fa) + static_cast<float>(fb)));
+	case 0x04: /* itofs : int reg<31:0> as S memory single -> fp reg */
+	  rc = sf_s_to_reg(sf_f32(static_cast<uint32_t>(s->gpr[m.f.ra])));
 	  break;
-	case 0x01: /* subs */
-	  rc = as_u64(static_cast<double>(static_cast<float>(fa) - static_cast<float>(fb)));
+	case 0x24: /* itoft : int reg -> fp reg (raw copy) */
+	  rc = s->gpr[m.f.ra];
 	  break;
-	case 0x02: /* muls */
-	  rc = as_u64(static_cast<double>(static_cast<float>(fa) * static_cast<float>(fb)));
+	case 0x0b: /* sqrts */
+	  rc = sf_s_to_reg(f32_sqrt(sf_reg_to_s(s->fpr[m.f.rb])));
 	  break;
-	case 0x03: /* divs */
-	  rc = as_u64(static_cast<double>(static_cast<float>(fa) / static_cast<float>(fb)));
-	  break;
-	case 0x20: /* addt */
-	  rc = as_u64(fa + fb);
-	  break;
-	case 0x21: /* subt */
-	  rc = as_u64(fa - fb);
-	  break;
-	case 0x22: /* mult */
-	  rc = as_u64(fa * fb);
-	  break;
-	case 0x23: /* divt */
-	  rc = as_u64(fa / fb);
-	  break;
-	case 0x24: /* cmptun */
-	  rc = (std::isnan(fa) || std::isnan(fb)) ? 0x4000000000000000UL : 0;
-	  break;
-	case 0x25: /* cmpteq */
-	  rc = (fa == fb) ? 0x4000000000000000UL : 0;
-	  break;
-	case 0x26: /* cmptlt */
-	  rc = (fa < fb) ? 0x4000000000000000UL : 0;
-	  break;
-	case 0x27: /* cmptle */
-	  rc = (fa <= fb) ? 0x4000000000000000UL : 0;
-	  break;
-	case 0x2c: /* cvtts */
-	  rc = as_u64(static_cast<double>(static_cast<float>(fb)));
-	  break;
-	case 0x2f: /* cvttq : rounding per qualifier (llrint follows fenv) */
-	  rc = static_cast<uint64_t>(llrint(fb));
-	  break;
-	case 0x3c: /* cvtqs */
-	  rc = as_u64(static_cast<double>(static_cast<float>(vb)));
-	  break;
-	case 0x3e: /* cvtqt */
-	  rc = as_u64(static_cast<double>(vb));
+	case 0x2b: /* sqrtt */
+	  rc = sf_bits64(f64_sqrt(sf_f64(s->fpr[m.f.rb])));
 	  break;
 	default:
-	  fesetround(FE_TONEAREST);
-	  goto report_unimplemented;
+	  ok = false;
+	  break;
 	}
-      fesetround(FE_TONEAREST);
+      if(!ok) {
+	goto report_unimplemented;
+      }
       s->fpr[m.f.rc] = rc;
       s->fpr[31] = 0;
       break;
     }
 
-    case 0x17: { /* FLTL : copies, fp cmov, fpcr, longword converts */
+    case 0x15: /* FLTV : VAX F/G/D floating - not yet implemented.
+		* softfloat has no VAX formats; the path is convert
+		* VAX<->IEEE (rebias, PDP-11 word swap, ties-away
+		* rounding, reserved-operand traps) around softfloat.
+		* deferred - Linux userland is IEEE (0x16). */
+      goto report_unimplemented;
+
+    case 0x16: { /* FLTI : IEEE S/T arithmetic, compares, converts */
+      softfloat_exceptionFlags = 0;
+      softfloat_roundingMode = alpha_sf_round(m.f.func, s->fpcr);
+      float64_t fa = sf_f64(s->fpr[m.f.ra]);
+      float64_t fb = sf_f64(s->fpr[m.f.rb]);
+      float32_t sa = sf_reg_to_s(s->fpr[m.f.ra]);
+      float32_t sb = sf_reg_to_s(s->fpr[m.f.rb]);
+      int64_t vb = static_cast<int64_t>(s->fpr[m.f.rb]);
+      uint32_t fn = m.f.func & 0x3f;
+      uint64_t rc = 0;
+      bool ok = true;
+      switch(fn)
+	{
+	case 0x00: /* adds */
+	  rc = sf_s_to_reg(f32_add(sa, sb));
+	  break;
+	case 0x01: /* subs */
+	  rc = sf_s_to_reg(f32_sub(sa, sb));
+	  break;
+	case 0x02: /* muls */
+	  rc = sf_s_to_reg(f32_mul(sa, sb));
+	  break;
+	case 0x03: /* divs */
+	  rc = sf_s_to_reg(f32_div(sa, sb));
+	  break;
+	case 0x20: /* addt */
+	  rc = sf_bits64(f64_add(fa, fb));
+	  break;
+	case 0x21: /* subt */
+	  rc = sf_bits64(f64_sub(fa, fb));
+	  break;
+	case 0x22: /* mult */
+	  rc = sf_bits64(f64_mul(fa, fb));
+	  break;
+	case 0x23: /* divt */
+	  rc = sf_bits64(f64_div(fa, fb));
+	  break;
+	case 0x24: /* cmptun : true if either is NaN */
+	  rc = (f64_eq(fa, fa) && f64_eq(fb, fb)) ? 0 : 0x4000000000000000UL;
+	  break;
+	case 0x25: /* cmpteq */
+	  rc = f64_eq(fa, fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x26: /* cmptlt */
+	  rc = f64_lt(fa, fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x27: /* cmptle */
+	  rc = f64_le(fa, fb) ? 0x4000000000000000UL : 0;
+	  break;
+	case 0x2c: /* cvtts : T -> S */
+	  rc = sf_s_to_reg(f64_to_f32(fb));
+	  break;
+	case 0x2f: /* cvttq : T -> quadword integer */
+	  rc = static_cast<uint64_t>(f64_to_i64(fb, softfloat_roundingMode, true));
+	  break;
+	case 0x3c: /* cvtqs : quadword integer -> S */
+	  rc = sf_s_to_reg(i64_to_f32(vb));
+	  break;
+	case 0x3e: /* cvtqt : quadword integer -> T */
+	  rc = sf_bits64(i64_to_f64(vb));
+	  break;
+	default:
+	  ok = false;
+	  break;
+	}
+      if(!ok) {
+	goto report_unimplemented;
+      }
+      s->fpr[m.f.rc] = rc;
+      s->fpr[31] = 0;
+      break;
+    }
+
+    case 0x17: { /* FLTL : copies, fp cmov, fpcr, longword converts.
+		  * cmov tests interpret Fa as a T-value; softfloat
+		  * compares against zero handle NaN correctly. */
       uint64_t va = s->fpr[m.f.ra];
       uint64_t vb = s->fpr[m.f.rb];
-      double db = as_double(s->fpr[m.f.rb]);
-      double da = as_double(va);
+      float64_t fa = sf_f64(va);
+      float64_t zero = sf_f64(0);
+      bool a_eq0 = fp_is_zero(va);
+      bool a_lt0 = f64_lt(fa, zero);
+      bool a_le0 = f64_le(fa, zero);
       switch(m.f.func)
 	{
 	case 0x010: /* cvtlq */
@@ -673,32 +745,32 @@ void execAlpha(alpha_state_t *s) {
 	  s->fpr[m.f.ra] = s->fpcr;
 	  break;
 	case 0x02a: /* fcmoveq */
-	  if(da == 0.0) {
+	  if(a_eq0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
 	case 0x02b: /* fcmovne */
-	  if(da != 0.0) {
+	  if(!a_eq0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
 	case 0x02c: /* fcmovlt */
-	  if(da < 0.0) {
+	  if(a_lt0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
 	case 0x02d: /* fcmovge */
-	  if(da >= 0.0) {
+	  if(!a_lt0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
 	case 0x02e: /* fcmovle */
-	  if(da <= 0.0) {
+	  if(a_le0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
 	case 0x02f: /* fcmovgt */
-	  if(da > 0.0) {
+	  if(!a_le0) {
 	    s->fpr[m.f.rc] = vb;
 	  }
 	  break;
@@ -760,6 +832,12 @@ void execAlpha(alpha_state_t *s) {
 	  break;
 	case 0x33: /* cttz */
 	  s->gpr[m.o.rc] = (rbv == 0) ? 64 : __builtin_ctzll(rbv);
+	  break;
+	case 0x70: /* ftoit (FIX) : fp reg Fa -> int reg (raw copy) */
+	  s->gpr[m.o.rc] = s->fpr[m.o.ra];
+	  break;
+	case 0x78: /* ftois (FIX) : fp reg Fa -> int reg in S memory format */
+	  s->gpr[m.o.rc] = sext32(sf_reg_to_s(s->fpr[m.o.ra]).v);
 	  break;
 	default:
 	  goto report_unimplemented;
@@ -824,18 +902,18 @@ void execAlpha(alpha_state_t *s) {
       s->gpr[m.b.ra] = npc;
       npc = npc + (sext21(m.b.disp) << 2);
       break;
-    case 0x31: /* fbeq */
-      if(as_double(s->fpr[m.b.ra]) == 0.0) {
+    case 0x31: /* fbeq : sign/zero bit-test of the fp register */
+      if(fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
-    case 0x32: /* fblt */
-      if(as_double(s->fpr[m.b.ra]) < 0.0) {
+    case 0x32: /* fblt : negative and nonzero */
+      if(((s->fpr[m.b.ra] >> 63) & 1) && !fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
-    case 0x33: /* fble */
-      if(as_double(s->fpr[m.b.ra]) <= 0.0) {
+    case 0x33: /* fble : negative or zero */
+      if(((s->fpr[m.b.ra] >> 63) & 1) || fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
@@ -843,18 +921,18 @@ void execAlpha(alpha_state_t *s) {
       s->gpr[m.b.ra] = npc;
       npc = npc + (sext21(m.b.disp) << 2);
       break;
-    case 0x35: /* fbne */
-      if(as_double(s->fpr[m.b.ra]) != 0.0) {
+    case 0x35: /* fbne : nonzero */
+      if(!fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
-    case 0x36: /* fbge */
-      if(as_double(s->fpr[m.b.ra]) >= 0.0) {
+    case 0x36: /* fbge : positive or zero */
+      if((((s->fpr[m.b.ra] >> 63) & 1) == 0) || fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
-    case 0x37: /* fbgt */
-      if(as_double(s->fpr[m.b.ra]) > 0.0) {
+    case 0x37: /* fbgt : positive and nonzero */
+      if((((s->fpr[m.b.ra] >> 63) & 1) == 0) && !fp_is_zero(s->fpr[m.b.ra])) {
 	npc = npc + (sext21(m.b.disp) << 2);
       }
       break;
@@ -900,7 +978,15 @@ void execAlpha(alpha_state_t *s) {
       break;
 
     default:
+    opcdec:
     report_unimplemented:
+      /* reserved/illegal opcode.  with a PAL image loaded this is the
+       * architected OPCDEC fault - vector to PAL; otherwise it is the
+       * old fatal path. */
+      if(s->pal_loaded) {
+	npc = enter_pal(s, pc, PAL_OPCDEC);
+	break;
+      }
       fprintf(stderr, "alpha_interp: unimplemented insn %08x (opcode %02x, func %02x) at pc %lx, icnt %lu\n",
 	      m.raw, opcode, m.o.func, pc, s->icnt);
       exit(-1);

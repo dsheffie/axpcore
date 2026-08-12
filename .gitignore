@@ -14,3 +14,11 @@ rv64_core
 *-branch_info.txt
 csmith_alpha_rtl/
 mem.csv
+pal/*.o
+pal/toy_pal
+pal/phase1_native
+pal/phase1_pal
+softfloat/build/*/*.o
+softfloat/build/*/softfloat.a
+fptest
+*.pdf

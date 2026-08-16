@@ -71,6 +71,25 @@ struct alpha_state_t {
   bool palmode;
   uint64_t ipr[64]; /* implementation-private IPR file (see IPR_* below) */
 
+  /* system mode : booting a real kernel.  CALL_PAL is serviced in C
+   * (PAL-in-C, the scoping path), and load/store/fetch go through
+   * xlate() : OSF kseg (va >= 0xfffffc0000000000 -> pa = va - kseg)
+   * direct-mapped, low addresses identity (early boot / HWRPB), the
+   * general page-table walk via ptbr is a TODO. */
+  bool system_mode;
+  uint64_t ptbr;   /* page table base (physical), from swpctx */
+  uint64_t ksp, usp; /* kernel/user stack pointers (swpctx) */
+
+  uint64_t xlate(uint64_t va) const {
+    if(!system_mode) {
+      return va;
+    }
+    if(va >= 0xfffffc0000000000UL) {
+      return va - 0xfffffc0000000000UL;   /* kseg direct map */
+    }
+    return va;   /* identity : early boot + HWRPB ; page walk TODO */
+  }
+
   /* minimal fp state : alpha has no integer divide - libgcc's __divqu
    * and friends do int division THROUGH the fpu, so running any
    * compiled code with division needs this subset even on a "no fp"
@@ -78,29 +97,36 @@ struct alpha_state_t {
   uint64_t fpr[32];
   uint64_t fpcr;
 
-  uint64_t load64(uint64_t pa) const {
-    return *reinterpret_cast<uint64_t*>(mem + pa);
+  /* raw physical accessors (hw_ld/hw_st, HWRPB build, page walk) */
+  uint64_t phys_load64(uint64_t pa) const { return *reinterpret_cast<uint64_t*>(mem + pa); }
+  uint32_t phys_load32(uint64_t pa) const { return *reinterpret_cast<uint32_t*>(mem + pa); }
+  void phys_store64(uint64_t pa, uint64_t x) { *reinterpret_cast<uint64_t*>(mem + pa) = x; }
+  void phys_store32(uint64_t pa, uint32_t x) { *reinterpret_cast<uint32_t*>(mem + pa) = x; }
+
+  /* program accessors : translate in system mode, identity otherwise */
+  uint64_t load64(uint64_t a) const {
+    return *reinterpret_cast<uint64_t*>(mem + xlate(a));
   }
-  uint32_t load32(uint64_t pa) const {
-    return *reinterpret_cast<uint32_t*>(mem + pa);
+  uint32_t load32(uint64_t a) const {
+    return *reinterpret_cast<uint32_t*>(mem + xlate(a));
   }
-  uint16_t load16(uint64_t pa) const {
-    return *reinterpret_cast<uint16_t*>(mem + pa);
+  uint16_t load16(uint64_t a) const {
+    return *reinterpret_cast<uint16_t*>(mem + xlate(a));
   }
-  uint8_t load8(uint64_t pa) const {
-    return mem[pa];
+  uint8_t load8(uint64_t a) const {
+    return mem[xlate(a)];
   }
-  void store64(uint64_t pa, uint64_t x) {
-    *reinterpret_cast<uint64_t*>(mem + pa) = x;
+  void store64(uint64_t a, uint64_t x) {
+    *reinterpret_cast<uint64_t*>(mem + xlate(a)) = x;
   }
-  void store32(uint64_t pa, uint32_t x) {
-    *reinterpret_cast<uint32_t*>(mem + pa) = x;
+  void store32(uint64_t a, uint32_t x) {
+    *reinterpret_cast<uint32_t*>(mem + xlate(a)) = x;
   }
-  void store16(uint64_t pa, uint16_t x) {
-    *reinterpret_cast<uint16_t*>(mem + pa) = x;
+  void store16(uint64_t a, uint16_t x) {
+    *reinterpret_cast<uint16_t*>(mem + xlate(a)) = x;
   }
-  void store8(uint64_t pa, uint8_t x) {
-    mem[pa] = x;
+  void store8(uint64_t a, uint8_t x) {
+    mem[xlate(a)] = x;
   }
 };
 

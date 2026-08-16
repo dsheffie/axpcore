@@ -174,6 +174,69 @@ static void handle_htif_monitor(alpha_state_t *s) {
   s->store64(s->fromhost_addr, 1);
 }
 
+/* PAL-in-C : service the CALL_PAL functions a kernel uses directly in
+ * the interpreter (the scoping path - no PAL asm).  OSF/1 function
+ * numbers.  most just compute and return to npc; halt/rti change
+ * control.  unimplemented ones die with a clear message so the boot
+ * enumerates what the kernel needs. */
+static uint64_t g_pal_ent[8]; /* wrent : exception entry addresses */
+
+static void handle_pal_call(alpha_state_t *s, uint32_t func) {
+  switch(func)
+    {
+    case 0x00: /* halt */
+      s->brk = 1;
+      break;
+    case 0x02: /* draina */
+    case 0x86: /* imb */
+    case 0x2b: /* wrfen (fp enable) */
+    case 0x39: /* wrperfmon */
+      break;
+    case 0x10: /* rdmces */
+      s->gpr[0] = 0;
+      break;
+    case 0x11: /* wrmces */
+      break;
+    case 0x2d: /* wrvptptr */
+      s->ipr[IPR_VPTPTR] = s->gpr[16];
+      break;
+    case 0x34: /* wrent : a1 = which vector, a0 = address */
+      if(s->gpr[17] < 8) {
+	g_pal_ent[s->gpr[17]] = s->gpr[16];
+      }
+      break;
+    case 0x35: /* swpipl : a0 = new IPL, v0 = old */
+      s->gpr[0] = s->ipr[IPR_PS] & 7;
+      s->ipr[IPR_PS] = (s->ipr[IPR_PS] & ~7UL) | (s->gpr[16] & 7);
+      break;
+    case 0x36: /* rdps */
+      s->gpr[0] = s->ipr[IPR_PS];
+      break;
+    case 0x37: /* wrkgp : kernel gp (a0) - stash in an IPR slot */
+      s->ipr[32] = s->gpr[16];
+      break;
+    case 0x38: /* wrusp */
+      s->usp = s->gpr[16];
+      break;
+    case 0x3a: /* rdusp */
+      s->gpr[0] = s->usp;
+      break;
+    case 0x3c: /* whami */
+      s->gpr[0] = 0;
+      break;
+    case 0x9e: /* rdunique */
+      s->gpr[0] = s->unique;
+      break;
+    case 0x9f: /* wrunique */
+      s->unique = s->gpr[16];
+      break;
+    default:
+      fprintf(stderr, "alpha_iss[system]: unimplemented CALL_PAL 0x%x at pc %lx, icnt %lu\n",
+	      func, s->pc, s->icnt);
+      exit(2);
+    }
+}
+
 /* enter PALmode at PAL_BASE + off : save return PC (low bit carries
  * the mode being left, per the architected HW_REI convention), switch
  * to palmode, redirect fetch.  returns the new pc. */
@@ -199,6 +262,11 @@ void execAlpha(alpha_state_t *s) {
   switch(opcode)
     {
     case 0x00: /* CALL_PAL */
+      /* system mode : service in C (PAL-in-C) */
+      if(s->system_mode) {
+	handle_pal_call(s, m.p.func);
+	break;
+      }
       /* 0xb0 is the substrate's own console / co-sim transport (the
        * manual's putc console-service role), not a guest-visible PAL
        * call - it stays inline even under real PAL dispatch. */
@@ -259,7 +327,7 @@ void execAlpha(alpha_state_t *s) {
       bool qw = (m.raw >> 12) & 1;
       int64_t disp = (static_cast<int64_t>(m.raw & 0xfff) << 52) >> 52;
       uint64_t ea = (s->gpr[m.m.rb] + disp) & ~(qw ? 7UL : 3UL);
-      s->gpr[m.m.ra] = qw ? s->load64(ea) : sext32(s->load32(ea));
+      s->gpr[m.m.ra] = qw ? s->phys_load64(ea) : sext32(s->phys_load32(ea));
       break;
     }
     case 0x1f: { /* hw_st (pal1f) : phys[Rb + sext12(disp)] <- Ra */
@@ -270,10 +338,10 @@ void execAlpha(alpha_state_t *s) {
       int64_t disp = (static_cast<int64_t>(m.raw & 0xfff) << 52) >> 52;
       uint64_t ea = (s->gpr[m.m.rb] + disp) & ~(qw ? 7UL : 3UL);
       if(qw) {
-	s->store64(ea, s->gpr[m.m.ra]);
+	s->phys_store64(ea, s->gpr[m.m.ra]);
       }
       else {
-	s->store32(ea, s->gpr[m.m.ra]);
+	s->phys_store32(ea, s->gpr[m.m.ra]);
       }
       break;
     }
